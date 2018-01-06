@@ -31,7 +31,6 @@ class Policy(object):
     """
 
     def __init__(self, ob_n, ac_n, hidden_dims=[400], dtype=np.float32):
-    #def __init__(self, ob_n, ac_n, hidden_dims=[4], dtype=np.float32):
         self.params = {} # dict to hold weight matrices
         self.hidden_dims = hidden_dims # list of sizes of hidden dims
         self.num_layers = len(self.hidden_dims) 
@@ -41,14 +40,18 @@ class Policy(object):
         # initialize all weight matrices
         layer_input_dim = ob_n
         for i, H in enumerate(self.hidden_dims):
-            self.params['W{}'.format(i)] = np.random.randn(layer_input_dim, H) / np.sqrt(layer_input_dim)
+            self.params['W{}'.format(i)] = (-1 + 2*np.random.rand(layer_input_dim, H)) / np.sqrt(layer_input_dim)
             layer_input_dim = H
             self.params['b{}'.format(i)] = np.zeros(layer_input_dim)
-        self.params['W{}'.format(i+1)] = np.random.randn(layer_input_dim, ac_n) / np.sqrt(ac_n)
+        self.params['W{}'.format(i+1)] = (-1 + 2*np.random.rand(layer_input_dim, ac_n)) / np.sqrt(hidden_dims[-1])
         self.params['b{}'.format(i+1)] = np.zeros(ac_n)
-        ## Cast all parameters to the correct datatype
-        #for k, v in self.params.items():
-        #  self.params[k] = v.astype(dtype)
+        # Cast all parameters to the correct datatype
+        for k, v in self.params.items():
+            pass
+            #print(v.min())
+            #self.params[k] = v.astype(dtype)
+
+        #exit(0)
 
         # RL specifics
         self.saved_observations = []
@@ -89,24 +92,22 @@ class Policy(object):
 
     def forward(self, x):
         layer_input = x
-        #print("INPUT ", x)
         
         # run input through all hidden layers
         for layer in range(self.num_layers):
             layer_input, layer_cache = affine_relu_forward(layer_input, self.params['W%d'%layer], self.params['b%d'%layer])
-            #print("LAYER{} ".format(layer), layer_input)
             self.add_to_cache(layer, layer_cache) # todo: don't save w and b because they are constant
+            #print(layer_input.shape)
 
         # run it through last layer to get activations
         logits, last_cache = affine_forward(layer_input, self.params['W%d'%self.num_layers], self.params['b%d'%self.num_layers])
-        #print("LOGITS ", logits)
         policy.saved_logits.append(logits)
         self.add_to_cache(self.num_layers, last_cache)
 
         # pass through a softmax to get probabilities 
         scores = softmax_forward(logits)
         self.add_to_cache('soft', scores)
-        return scores
+        return scores, logits 
 
     def zero_grads(self):
         for g in self.grads:
@@ -119,7 +120,7 @@ class Policy(object):
         #dout = softmax_backward(dout, np.concatenate(self.cache['soft']), saved_actions)
         #dout = dout * np.concatenate(self.cache['soft']) 
         #import ipdb; ipdb.set_trace()
-        #dout = dout * np.ones([1,self.ac_n])
+        dout = dout * np.ones([1,self.ac_n])
         #print(dout)
         dout, dw, db = affine_backward(dout, self.ctol(self.cache[self.num_layers]))
         #print(dw)
@@ -143,16 +144,24 @@ policy = Policy(8, 4)
 
 def select_action(obs):
     obs = np.reshape(obs, [1, -1])
-    probs = policy.forward(obs)[0]
+    probs, logits = policy.forward(obs)
+    probs = probs[0]
+    logits = logits[0]
 
     action = np.random.choice(policy.ac_n, p=probs)
 
-    vals = -probs 
+    #dsofma = logits[action] - np.sum(probs * logits)
+    #dsofma = -np.log(probs[action])
+    #print(probs)
+    #print(dsofma)
+
+    vals = -probs
     vals[action] += 1
 
     #neg_log = -np.log(probs[action])
     #policy.saved_neg_log_probs.append(neg_log)
     policy.saved_neg_log_probs.append(vals)
+    #policy.saved_neg_log_probs.append(dsofma)
 
     policy.saved_observations.append(obs)
     policy.saved_actions.append(action)
@@ -174,13 +183,13 @@ def finish_episode():
     returns = (returns - returns.mean()) / (returns.std() + np.finfo(np.float32).eps)
 
     for neg_log_prob, reward in zip(policy.saved_neg_log_probs, returns):
-        policy_loss.append(-neg_log_prob * reward)
+        policy_loss.append(neg_log_prob * reward)
 
     observations = np.vstack(policy.saved_observations)
     actions = np.stack(policy.saved_actions)
     #policy_loss = sum(policy_loss)
-    #policy.backward(policy_loss, actions)
-    policy.backward(np.stack(policy_loss), actions)
+    policy.backward(-np.stack(policy_loss), actions)
+    #policy.backward(np.stack(policy_loss).reshape(-1,1), actions)
 
     ti += 1
 

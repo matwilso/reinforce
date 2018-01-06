@@ -80,10 +80,11 @@ def relu_backward(dout, cache):
 ##    probs /= np.sum(probs, axis=1, keepdims=True)
 ##    return probs
 
-##def softmax_backward(dout, cache):
-##    #import ipdb; ipdb.set_trace()
-##    din = ((dout - np.reshape(np.sum(dout * cache, 1), [1, -1])) * cache)
-##    #din = cache * (dout - np.sum(dout * cache, axis=1).reshape(-1, 1)) 
+#def softmax_backward(dout, cache, _):
+#    import ipdb; ipdb.set_trace()
+#    din = ((dout - np.reshape(np.sum(dout * cache, 1), [-1, 1])) * cache)
+#    #din = cache * (dout - np.sum(dout * cache, axis=1).reshape(-1, 1)) 
+#    return din
 
 def softmax_forward(x):
     shifted_logits = x - np.max(x, axis=1, keepdims=True)
@@ -95,7 +96,7 @@ def softmax_forward(x):
 def softmax_backward(dout, cache, saved_actions):
     N = cache.shape[0]
     dx = dout * cache
-    import ipdb; ipdb.set_trace()
+    #import ipdb; ipdb.set_trace()
     dx[np.arange(N), saved_actions] -= 1
     dx /= N
 

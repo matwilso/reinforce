@@ -20,8 +20,8 @@ args = parser.parse_args()
 
 env = gym.make('LunarLander-v2')
 #env = gym.make('CartPole-v0')
-#env.seed(args.seed)
-#np.random.seed(args.seed)
+env.seed(args.seed)
+np.random.seed(args.seed)
 
 # TODO: move the numerical gradient check to a test suite 
 
@@ -31,7 +31,7 @@ class Policy(object):
     """
 
     def __init__(self, ob_n, ac_n, hidden_dims=[400], dtype=np.float32):
-    #def __init__(self, ob_n, ac_n, hidden_dims=[2, 2], dtype=np.float32):
+    #def __init__(self, ob_n, ac_n, hidden_dims=[4], dtype=np.float32):
         self.params = {} # dict to hold weight matrices
         self.hidden_dims = hidden_dims # list of sizes of hidden dims
         self.num_layers = len(self.hidden_dims) 
@@ -46,9 +46,9 @@ class Policy(object):
             self.params['b{}'.format(i)] = np.zeros(layer_input_dim)
         self.params['W{}'.format(i+1)] = np.random.randn(layer_input_dim, ac_n) / np.sqrt(ac_n)
         self.params['b{}'.format(i+1)] = np.zeros(ac_n)
-        # Cast all parameters to the correct datatype
-        for k, v in self.params.items():
-          self.params[k] = v.astype(dtype)
+        ## Cast all parameters to the correct datatype
+        #for k, v in self.params.items():
+        #  self.params[k] = v.astype(dtype)
 
         # RL specifics
         self.saved_observations = []
@@ -114,10 +114,10 @@ class Policy(object):
 
     def backward(self, dout, saved_actions):
 
-        logits = np.concatenate(policy.saved_logits) 
-        dout_num = eval_numerical_gradient_array(lambda x: softmax_forward(x), logits, dout)
-        #print(dout)
-        dout = softmax_backward(dout, np.concatenate(self.cache['soft']), saved_actions)
+        #logits = np.concatenate(policy.saved_logits) 
+        #dout_num = eval_numerical_gradient_array(lambda x: softmax_forward(x), logits, dout)
+        #dout = softmax_backward(dout, np.concatenate(self.cache['soft']), saved_actions)
+        #dout = dout * np.concatenate(self.cache['soft']) 
         #import ipdb; ipdb.set_trace()
         #dout = dout * np.ones([1,self.ac_n])
         #print(dout)
@@ -146,8 +146,14 @@ def select_action(obs):
     probs = policy.forward(obs)[0]
 
     action = np.random.choice(policy.ac_n, p=probs)
-    neg_log = -np.log(probs[action])
-    policy.saved_neg_log_probs.append(neg_log)
+
+    vals = -probs 
+    vals[action] += 1
+
+    #neg_log = -np.log(probs[action])
+    #policy.saved_neg_log_probs.append(neg_log)
+    policy.saved_neg_log_probs.append(vals)
+
     policy.saved_observations.append(obs)
     policy.saved_actions.append(action)
 
@@ -168,11 +174,13 @@ def finish_episode():
     returns = (returns - returns.mean()) / (returns.std() + np.finfo(np.float32).eps)
 
     for neg_log_prob, reward in zip(policy.saved_neg_log_probs, returns):
-        policy_loss.append(neg_log_prob * reward)
+        policy_loss.append(-neg_log_prob * reward)
 
-    observations = np.stack(policy.saved_observations)
+    observations = np.vstack(policy.saved_observations)
     actions = np.stack(policy.saved_actions)
-    policy.backward(np.stack(policy_loss).reshape(-1, 1), actions)
+    #policy_loss = sum(policy_loss)
+    #policy.backward(policy_loss, actions)
+    policy.backward(np.stack(policy_loss), actions)
 
     ti += 1
 
@@ -180,6 +188,7 @@ def finish_episode():
         for p in policy.params:
             next_w, policy.configs[p] = adam(policy.params[p], policy.grads[p], config=policy.configs[p])
             policy.params[p] = next_w
+            #print(p, policy.configs[p])
             #print(p, next_w)
         policy.zero_grads()
 
@@ -188,30 +197,6 @@ def finish_episode():
     del policy.saved_observations[:]
     del policy.saved_actions[:]
     del policy.saved_logits[:]
-
-
-import matplotlib.pyplot as plt
-def hinton(matrix, max_weight=None, ax=None):
-    """Draw Hinton diagram for visualizing a weight matrix."""
-    ax = ax if ax is not None else plt.gca()
-
-    if not max_weight:
-        max_weight = 2 ** np.ceil(np.log(np.abs(matrix).max()) / np.log(2))
-
-    ax.patch.set_facecolor('gray')
-    ax.set_aspect('equal', 'box')
-    ax.xaxis.set_major_locator(plt.NullLocator())
-    ax.yaxis.set_major_locator(plt.NullLocator())
-
-    for (x, y), w in np.ndenumerate(matrix):
-        color = 'white' if w > 0 else 'black'
-        size = np.sqrt(np.abs(w) / max_weight)
-        rect = plt.Rectangle([x - size / 2, y - size / 2], size, size,
-                             facecolor=color, edgecolor=color)
-        ax.add_patch(rect)
-
-    ax.autoscale_view()
-    ax.invert_yaxis()
 
 def main():
     avg_reward = []
@@ -239,8 +224,6 @@ def main():
             print("Ave reward: {}".format(sum(avg_reward)/len(avg_reward)))
             avg_reward = []
 
-            #hinton(policy.params['W0'])
-            #plt.show()
         else:
             avg_reward.append(ep_reward)
 

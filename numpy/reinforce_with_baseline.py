@@ -24,7 +24,6 @@ env.seed(args.seed)
 np.random.seed(args.seed)
 
 # TODO: add support for continuous actions
-# TODO: rename neg_log_probs to be called gradient or something 
 
 
 class Policy(object):
@@ -59,16 +58,19 @@ class Policy(object):
         self.params = {}
         layer_input_dim = ob_n
         for i, H in enumerate(self.hidden_dims):
-            self.params['W{}'.format(i)] = (-1 + 2*np.random.rand(layer_input_dim, H)) / np.sqrt(layer_input_dim)
+            self.params['shared.W{}'.format(i)] = (-1 + 2*np.random.rand(layer_input_dim, H)) / np.sqrt(layer_input_dim)
             layer_input_dim = H
-            self.params['b{}'.format(i)] = np.zeros(layer_input_dim)
-        self.params['W{}'.format(i+1)] = (-1 + 2*np.random.rand(layer_input_dim, ac_n)) / np.sqrt(hidden_dims[-1])
-        self.params['b{}'.format(i+1)] = np.zeros(ac_n)
+            self.params['shared.b{}'.format(i)] = np.zeros(layer_input_dim)
+        self.params['policy.W'] = (-1 + 2*np.random.rand(layer_input_dim, ac_n)) / np.sqrt(hidden_dims[-1])
+        self.params['policy.b'] = np.zeros(ac_n)
+
+        # Value estimation 
+        self.params['value.W'] = (-1 + 2*np.random.rand(layer_input_dim, 1)) / np.sqrt(hidden_dims[-1])
+        self.params['value.b'.format(i+1)] = np.zeros(1)
 
         # Cast all parameters to the correct datatype
         for k, v in self.params.items():
-            self.params[k] = v.astype(self.dtype)
-
+            self.params[k] = v.astype(self.dtype) 
         # Neural net bookkeeping 
         self.cache = {}
         self.grads = {}
@@ -80,8 +82,9 @@ class Policy(object):
             self.adam_configs[p] = d
 
         # RL specific bookkeeping
-        self.saved_neg_log_probs = []
         self.rewards = []
+        self.saved_values = []
+        self.saved_neg_log_probs = []
 
     def zero_grads(self):
         """Reset gradients to 0. This should be called during optimization steps"""
@@ -116,35 +119,48 @@ class Policy(object):
         layer_input = x
         # run input through all hidden layers
         for layer in range(self.num_layers):
-            layer_input, layer_cache = affine_relu_forward(layer_input, self.params['W%d'%layer], self.params['b%d'%layer])
+            layer_input, layer_cache = affine_relu_forward(layer_input, self.params['shared.W%d'%layer], self.params['shared.b%d'%layer])
             self._add_to_cache(layer, layer_cache) # todo: don't save w and b because they are constant
-        # run it through last layer to get activations
-        logits, last_cache = affine_forward(layer_input, self.params['W%d'%self.num_layers], self.params['b%d'%self.num_layers])
+
+        # run it through polilcy last layer to get activations
+        logits, last_cache = affine_forward(layer_input, self.params['policy.W'], self.params['policy.b'])
         self._add_to_cache(self.num_layers, last_cache)
+
+        # run it through value last layer to get baseline value
+        value_est, value_est_cache = affine_forward(layer_input, self.params['value.W'], self.params['value.b'])
+        self._add_to_cache('value_est', value_est_cache)
 
         # pass through a softmax to get probabilities 
         scores = softmax_forward(logits)
         self._add_to_cache('soft', scores)
-        return scores 
+
+        return scores, value_est
 
 
-    def backward(self, dout):
+    def backward(self, dpolicy, dbaseline):
         """
         Chain rule the derivatives backward through all network computations, 
-        and set self.grads for each of the weights (to be used in stochastic gradient
-        descent optimization (adam))
+        and set self.grads for each of the weights (to be used in stochastic gradient descent optimization (adam))
         """
-        dout, dw, db = affine_backward(dout, self._cache_to_list(self.cache[self.num_layers]))
-        self._set_grad('W%d'%self.num_layers, dw)
-        self._set_grad('b%d'%self.num_layers, db)
+        dout, dw, db = affine_backward(dpolicy, self._cache_to_list(self.cache[self.num_layers]))
+        self._set_grad('policy.W', dw)
+        self._set_grad('policy.b', db)
+
+#        import ipdb; ipdb.set_trace()
+        dval, dvalw, dvalb = affine_backward(dbaseline, self._cache_to_list(self.cache['value_est']))
+        self._set_grad('value.W', dvalw)
+        self._set_grad('value.b', dvalb)
+
+        assert(dval.shape == dout.shape)
+        dout += dval
 
         for i in reversed(range(self.num_layers)):
             fc_cache, relu_cache = zip(*self.cache[i])
             fc_cache = self._cache_to_list(fc_cache)
             relu_cache = np.concatenate(relu_cache)
             dout, dw, db = affine_relu_backward(dout, (fc_cache, relu_cache))
-            self._set_grad('W%d'%i, dw)
-            self._set_grad('b%d'%i, db)
+            self._set_grad('shared.W%d'%i, dw)
+            self._set_grad('shared.b%d'%i, db)
 
         # reset cache for next backward pass
         self.cache = {}
@@ -159,7 +175,9 @@ def select_action(obs):
     of dsoftmax to use to update weights
     """
     obs = np.reshape(obs, [1, -1])
-    probs = policy.forward(obs)[0]
+    probs, value = policy.forward(obs)
+    probs = probs[0]
+    value = value[0]
     action = np.random.choice(policy.ac_n, p=probs)
     # I am not really sure if this signal is standard or if the math checks out,
     # but it works and it makes sense
@@ -171,6 +189,7 @@ def select_action(obs):
     dsoftmax[action] += 1
 
     policy.saved_neg_log_probs.append(dsoftmax)
+    policy.saved_values.append(value)
 
     # this is what is used in other implementations that I have seen, but I couldn't
     # figure out how to make it work
@@ -186,21 +205,30 @@ def finish_episode():
     policy_loss = []
     returns = []
 
-    # Calculate discounted reward and normalize it
+    # Calculate return and normalize it
     for R in policy.rewards[::-1]:
-        next_return = R + args.gamma * next_return
+        next_return = R + next_return
         returns.insert(0, next_return)
     returns = np.array(returns)
     returns = (returns - returns.mean()) / (returns.std() + np.finfo(np.float32).eps)
+    
+    values = np.stack(policy.saved_values)
+    deltas = []
 
+    # TODO: if it doesn't work, follow book exactly (discounted return...)
     # Multiply the signal that makes actions taken more probable by the discounted
     # return of that action.  This will pull the weights in the direction that
     # makes *better* actions more probable.
-    for neg_log_prob, G_t in zip(policy.saved_neg_log_probs, returns):
-        policy_loss.append(neg_log_prob * G_t)
+    steps_to_end = len(returns)
+    for neg_log_prob, G_t, value in zip(policy.saved_neg_log_probs, returns, values):
+        delta = G_t - value
+        policy_loss.append(neg_log_prob * (args.gamma**steps_to_end)*delta)
+        deltas.append(delta)
+        steps_to_end -= 1
+    assert(steps_to_end == 0)
 
-    # negate policy loss because we want gradient ascent, not descent
-    policy.backward(-np.stack(policy_loss))
+    # negate these because we want gradient ascent, not descent
+    policy.backward(-np.stack(policy_loss), -np.stack(deltas))
 
     # run an optimization step on all of the model parameters
     for p in policy.params:
@@ -210,6 +238,7 @@ def finish_episode():
 
     del policy.rewards[:]
     del policy.saved_neg_log_probs[:]
+    del policy.saved_values[:]
 
 def main():
     """Run REINFORCE algorithm to train on the environment"""

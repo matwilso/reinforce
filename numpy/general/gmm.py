@@ -46,6 +46,50 @@ class GMM(object):
         """
         self._initialize_params(data, K, method=init)
 
+        # E-step
+        gamma = np.zeros([self.N, self.K])
+        for i in range(self.N):
+            for j in range(self.K):
+                mvar = multivariate_normal(self.mu[j], self.Sigma[j])
+                gamma[i][j] = self.weights[j] * mvar.pdf(data[i])
+            gamma[i, :] /= np.sum(gamma[i, :])
+
+            assert np.isclose(1, np.sum(gamma[i, :]))
+
+        n_list = np.sum(gamma, 0) 
+
+        # M-step 
+        weight_update = n_list / np.sum(n_list)
+
+        n_inv = (1.0/n_list)[:, np.newaxis]
+        mu_update =  n_inv * np.dot(gamma.T, data) 
+
+        Sigma_update = np.zeros([self.K, self.D, self.D])
+        #for j in range(K):
+        #    diff = data - mu_update[j]
+        #    Sigma_update[j, :, :] = np.dot(gamma.T, np.dot(diff, diff.T))
+        Sigma_update = np.zeros([self.K, self.D, self.D])
+        for j in range(self.K):
+            for i in range(self.N):
+                diff = data[i] - mu_update[j]
+                Sigma_update[j, :, :] += gamma[i][j]*(diff.T.dot(diff))
+            Sigma_update[j, :, :] *= 1.0/n_list[j]
+
+        self.weights = weight_update
+        self.mu = mu_update
+        self.Sigma = Sigma_update + np.eye(self.D)*2e-6
+
+        ll = 0
+        for i in range(self.N):
+            log_sum = 0
+            for j in range(self.K):
+                print(self.mu[j], self.Sigma[j])
+                mvar = multivariate_normal(self.mu[j], self.Sigma[j])
+                print(mvar.pdf(data[i]))
+                log_sum += self.weights[j] * mvar.pdf(data[i])
+            ll += np.log(log_sum)
+
+        return ll
 
 
 

@@ -5,6 +5,18 @@ class GMM(object):
     def __init__(self):
         pass
 
+    def _compute_ll(self, data):
+        ll = 0
+        for i in range(self.N):
+            log_sum = 0
+            for j in range(self.K):
+                mvar = multivariate_normal(self.mu[j], self.Sigma[j])
+                log_sum += self.weights[j] * mvar.pdf(data[i])
+            ll += np.log(log_sum)
+
+        return ll
+
+
     def _initialize_params(self, data, K, method='kmeans_init'):
         """
         Initialize GMM weights, mean, and covariance
@@ -39,12 +51,15 @@ class GMM(object):
 
         return self.mu, self.Sigma
 
+
     def fit(self, data, K, init='kmeans_init'):
         """
         data is (N, D) measurements
         K is number of clusters
         """
         self._initialize_params(data, K, method=init)
+
+        prev_ll = self._compute_ll(data)
 
         # E-step
         gamma = np.zeros([self.N, self.K])
@@ -65,31 +80,28 @@ class GMM(object):
         mu_update =  n_inv * np.dot(gamma.T, data) 
 
         Sigma_update = np.zeros([self.K, self.D, self.D])
-        #for j in range(K):
-        #    diff = data - mu_update[j]
-        #    Sigma_update[j, :, :] = np.dot(gamma.T, np.dot(diff, diff.T))
-        Sigma_update = np.zeros([self.K, self.D, self.D])
+
         for j in range(self.K):
             for i in range(self.N):
-                diff = data[i] - mu_update[j]
+                diff = (data[i] - mu_update[j])[np.newaxis, :]
                 Sigma_update[j, :, :] += gamma[i][j]*(diff.T.dot(diff))
+
+        for j in range(self.K):
             Sigma_update[j, :, :] *= 1.0/n_list[j]
+
+        #print(weight_update, mu_update, Sigma_update, sep='\n----------\n')
+
 
         self.weights = weight_update
         self.mu = mu_update
         self.Sigma = Sigma_update + np.eye(self.D)*2e-6
 
-        ll = 0
-        for i in range(self.N):
-            log_sum = 0
-            for j in range(self.K):
-                print(self.mu[j], self.Sigma[j])
-                mvar = multivariate_normal(self.mu[j], self.Sigma[j])
-                print(mvar.pdf(data[i]))
-                log_sum += self.weights[j] * mvar.pdf(data[i])
-            ll += np.log(log_sum)
 
-        return ll
+        curr_ll = self._compute_ll(data)
+        assert(curr_ll > prev_ll)
+
+
+        return curr_ll
 
 
 
@@ -119,6 +131,6 @@ if __name__ == '__main__':
         data[i] = np.random.multivariate_normal(means[j], covs[j])
 
     gmm = GMM()
-    gmm.fit(data, K=5)
+    print(gmm.fit(data, K=5))
 
 

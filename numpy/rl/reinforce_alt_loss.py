@@ -48,7 +48,7 @@ class Policy(object):
         """
         self.ob_n = ob_n
         self.ac_n = ac_n
-        self.hidden_dims = hidden_dims 
+        self.hidden_dims = hidden_dims
         self.dtype = dtype
 
         self.num_layers = len(self.hidden_dims)  
@@ -125,7 +125,7 @@ class Policy(object):
         # pass through a softmax to get probabilities 
         scores = softmax_forward(logits)
         self._add_to_cache('soft', scores)
-        return scores 
+        return scores, logits
 
 
     def backward(self, dout):
@@ -159,18 +159,25 @@ def select_action(obs):
     of dsoftmax to use to update weights
     """
     obs = np.reshape(obs, [1, -1])
-    probs = policy.forward(obs)[0]
-    action = np.random.choice(policy.ac_n, p=probs)
-    # I am not really sure if this signal is standard or if the math checks out,
-    # but it works and it makes sense
-    # 1. for actions not taken, decrease weights proportional to their probabilties
-    # (if the reward is positive, this will make these less probable after updating)
-    dsoftmax = -probs 
-    # 2. for the action that was chose, if the probability was loss, this will be higher
-    # (if the reward is positive, this will make these more probable after updating)
-    dsoftmax[action] += 1
+    probs, logits = policy.forward(obs)
+    probs = probs[0]
+    logits = logits[0]
 
-    policy.saved_neg_log_probs.append(dsoftmax)
+    action = np.random.choice(policy.ac_n, p=probs)
+    ### I am not really sure if this signal is standard or if the math checks out,
+    ### but it works and it makes sense
+    ### 1. for actions not taken, decrease weights proportional to their probabilties
+    ### (if the reward is positive, this will make these less probable after updating)
+    ##dsoftmax = -probs 
+    ### 2. for the action that was chose, if the probability was loss, this will be higher
+    ### (if the reward is positive, this will make these more probable after updating)
+    ##dsoftmax[action] += 1
+
+    ##policy.saved_neg_log_probs.append(dsoftmax)
+
+    dh = -1*np.exp(logits)/np.sum(np.exp(logits))
+    dh[action] += 1
+    policy.saved_neg_log_probs.append(dh)
 
     # this is what is used in other implementations that I have seen, but I couldn't
     # figure out how to make it work

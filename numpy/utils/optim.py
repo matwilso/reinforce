@@ -1,6 +1,8 @@
 import numpy as np
-
 """
+THIS IS FROM TAKEN FROM STANFORD'S CS231N COURSE, WHICH I HIGHLY RECOMMEND 
+http://cs231n.github.io/
+
 This file implements various first-order update rules that are commonly used for
 training neural networks. Each update rule accepts current weights and the
 gradient of the loss with respect to those weights and produces the next set of

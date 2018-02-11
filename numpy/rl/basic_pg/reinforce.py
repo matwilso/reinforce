@@ -2,13 +2,14 @@
 import argparse
 import gym
 import numpy as np
+import scipy.stats
 from itertools import count
 
 # make it possible to import from ../../utils/
 import os.path, sys
 sys.path.append(os.path.join(os.path.dirname(os.path.realpath(__file__)), '../..'))
 from utils.optim import adam
-from utils.rl_utils import calculate_discounted_returns
+
 
 parser = argparse.ArgumentParser(description='Numpy REINFORCE')
 parser.add_argument('--gamma', type=float, default=0.99, metavar='G',
@@ -26,19 +27,22 @@ args = parser.parse_args()
 # TODO: add support for continuous actions
 # TODO: add weight saving and loading?
 
-class Policy(object):
+"""
+    Glossary:
+        (w.r.t.) = with respect to (as in taking gradient with respect to a variable)
+        (h or logits) = numerical policy preferences, or unnormalized probailities of actions
+"""
+
+class PolicyNetwork(object):
     """
-    Neural network policy  
+    Neural network policy. Takes in observations and returns probabilities of 
+    taking actions.
 
     ARCHITECTURE:
     {affine - relu } x (L - 1) - affine - softmax  
 
-
-    Glossary:
-        (w.r.t.) = with respect to (as in taking gradient with respect to a variable)
-        (h or logits) = numerical policy preferences, or unnormalized probailities of actions
     """
-    def __init__(self, ob_n, ac_n, hidden_dim=500, dtype=np.float32):
+    def __init__(self, ob_n, ac_n, continuous, hidden_dim=500, dtype=np.float32):
         """
         Initialize a neural network to choose actions
 
@@ -52,6 +56,7 @@ class Policy(object):
         """
         self.ob_n = ob_n
         self.ac_n = ac_n
+        self.continuous = continuous
         self.hidden_dim = H = hidden_dim
         self.dtype = dtype
 
@@ -125,16 +130,26 @@ class Policy(object):
         affine1 = x.dot(W1) + b1
         relu1 = np.maximum(0, affine1)
         affine2 = relu1.dot(W2) + b2 
-        logits = affine2 # layer right before softmax (i also call this h)
-        # pass through a softmax to get probabilities 
-        probs = self._softmax(logits)
+
+        if self.continuous:
+            # TODO need to do better handling here, like switching to sigmoid
+            # if the range is not symmetric, or multiplying by a constant if it
+            # is not ranged [-1,1]
+
+            # pass through tanh to place output range in [-1,1]
+            #out = np.tanh(affine2)
+            out = affine2
+        else:
+            logits = affine2 # layer right before softmax (i also call this h)
+            # pass through a softmax to get probabilities 
+            probs = self._softmax(logits)
+            out = probs
 
         # cache values for backward (based on what is needed for analytic gradient calc)
         self._add_to_cache('affine1', x) 
         self._add_to_cache('relu1', affine1) 
         self._add_to_cache('affine2', relu1) 
-
-        return probs
+        return out
     
     def backward(self, dout):
         """
@@ -183,70 +198,97 @@ class Policy(object):
         # reset cache for next backward pass
         self.cache = {}
 
-# REINFORCE FUNCTIONS
-def select_action(obs):
+class REINFORCE(object):
     """
-    Pass observations through network and sample an action to take. Keep track
-    of dh to use to update weights
+    Object to handle running the algorithm. Uses a PolicyNetwork
     """
-    obs = np.reshape(obs, [1, -1])
-    probs = policy.forward(obs)[0]
+    def __init__(self, env):
+        ob_n = env.observation_space.shape[0]
+        if type(env.action_space) == gym.spaces.box.Box:
+            ac_n = env.action_space.shape[0]
+            self.continuous = True
+        else:
+            ac_n = env.action_space.n
+            self.continuous = False
 
-    # randomly sample action based on probabilities
-    action = np.random.choice(policy.ac_n, p=probs)
+        self.policy = PolicyNetwork(ob_n, ac_n, self.continuous)
 
-    # derivative that pulls in direction to make actions taken more probable
-    # this will be fed backwards later
-    # (see README.md for derivation)
-    dh = -1*probs
-    dh[action] += 1
-    policy.saved_action_gradients.append(dh)
+    def select_action(self, obs):
+        """
+        Pass observations through network and sample an action to take. Keep track
+        of dh to use to update weights
+        """
+        obs = np.reshape(obs, [1, -1])
+        netout = self.policy.forward(obs)[0]
 
-    return action
+        std = 0.1 
+        if self.continuous: 
+            action = np.random.normal(netout, std)
+            action = action.clip(-1,1)
+            # I think the analytic gradient is undefined, because we are 
+            # clipping.  It should be
+            #dnetout = (action - netout)/std**2
+            # Instead, we have to compute it numerically
+            normal_dist = scipy.stats.norm(netout, std)
+            dh = normal_dist.logpdf(action)
+            #dh = (1 - netout**2) * dnetout
+        else:
+            probs = netout
+            # randomly sample action based on probabilities
+            action = np.random.choice(self.policy.ac_n, p=probs)
+            # derivative that pulls in direction to make actions taken more probable
+            # this will be fed backwards later
+            # (see README.md for derivation)
+            dh = -1*probs
+            dh[action] += 1
+        self.policy.saved_action_gradients.append(dh)
+    
+        return action
 
-def calculate_discounted_returns(rewards):
-    """
-    Calculate discounted reward and then normalize it
-    See Sutton book for definition
 
-    Params:
-        rewards: list of rewards for every episode
-    """
-    returns = np.zeros(len(rewards))
+    def calculate_discounted_returns(self, rewards):
+        """
+        Calculate discounted reward and then normalize it
+        See Sutton book for definition 
+        Params:
+            rewards: list of rewards for every episode
+        """
+        returns = np.zeros(len(rewards))
+    
+        next_return = 0 # 0 because we start at the last timestep
+        for t in reversed(range(0, len(rewards))):
+            next_return = rewards[t] + args.gamma * next_return
+            returns[t] = next_return
+        # normalize for better statistical properties
+        returns = (returns - returns.mean()) / (returns.std() + np.finfo(np.float32).eps)
+        return returns
+    
+    def finish_episode(self):
+        """
+        At the end of the episode, calculate the discounted return for each time step
+        """
+        action_gradient = np.array(self.policy.saved_action_gradients)
+        returns = self.calculate_discounted_returns(self.policy.rewards)
+        # Multiply the signal that makes actions taken more probable by the discounted
+        # return of that action.  This will pull the weights in the direction that
+        # makes *better* actions more probable.
+        self.policy_gradient = np.zeros(action_gradient.shape)
+        for t in range(0, len(returns)):
+            self.policy_gradient[t] = action_gradient[t] * returns[t]
+    
+        # negate because we want gradient ascent, not descent
+        self.policy.backward(-self.policy_gradient)
+    
+        # run an optimization step on all of the model parameters
+        for p in self.policy.params:
+            next_w, self.policy.adam_configs[p] = adam(self.policy.params[p], self.policy.grads[p], config=self.policy.adam_configs[p])
+            self.policy.params[p] = next_w
+        self.policy._zero_grads() # required every call to adam
+    
+        # reset stuff
+        del self.policy.rewards[:]
+        del self.policy.saved_action_gradients[:]
 
-    next_return = 0 # 0 because we start at the last timestep
-    for t in reversed(range(0, len(rewards))):
-        next_return = rewards[t] + args.gamma * next_return
-        returns[t] = next_return
-    # normalize for better statistical properties
-    returns = (returns - returns.mean()) / (returns.std() + np.finfo(np.float32).eps)
-    return returns
-
-def finish_episode():
-    """
-    At the end of the episode, calculate the discounted return for each time step
-    """
-    action_gradient = np.array(policy.saved_action_gradients)
-    returns = calculate_discounted_returns(policy.rewards)
-    # Multiply the signal that makes actions taken more probable by the discounted
-    # return of that action.  This will pull the weights in the direction that
-    # makes *better* actions more probable.
-    policy_gradient = np.zeros(action_gradient.shape)
-    for t in range(0, len(returns)):
-        policy_gradient[t] = action_gradient[t] * returns[t]
-
-    # negate because we want gradient ascent, not descent
-    policy.backward(-policy_gradient)
-
-    # run an optimization step on all of the model parameters
-    for p in policy.params:
-        next_w, policy.adam_configs[p] = adam(policy.params[p], policy.grads[p], config=policy.adam_configs[p])
-        policy.params[p] = next_w
-    policy._zero_grads() # required every call to adam
-
-    # reset stuff
-    del policy.rewards[:]
-    del policy.saved_action_gradients[:]
 
 def main():
     """Run REINFORCE algorithm to train on the environment"""
@@ -255,10 +297,10 @@ def main():
         ep_reward = 0
         obs = env.reset()
         for t in range(10000):  # Don't infinite loop while learning
-            action = select_action(obs)
+            action = reinforce.select_action(obs)
             obs, reward, done, _ = env.step(action)
             ep_reward += reward
-            policy.rewards.append(reward)
+            reinforce.policy.rewards.append(reward)
 
             if args.render_interval != -1 and i_episode % args.render_interval == 0:
                 env.render()
@@ -266,7 +308,7 @@ def main():
             if done:
                 break
 
-        finish_episode()
+        reinforce.finish_episode()
 
         if i_episode % args.log_interval == 0:
             print("Ave reward: {}".format(sum(avg_reward)/len(avg_reward)))
@@ -279,7 +321,8 @@ if __name__ == '__main__':
     env = gym.make(args.env_id)
     env.seed(args.seed)
     np.random.seed(args.seed)
-    ob_n = env.observation_space.shape[0]
-    ac_n = env.action_space.n
-    policy = Policy(ob_n, ac_n)
+    reinforce = REINFORCE(env)
     main()
+
+
+

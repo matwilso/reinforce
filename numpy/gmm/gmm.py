@@ -19,7 +19,7 @@ class GMM(object):
         return ll
 
 
-    def _initialize_params(self, data, K, method='kmeans_init'):
+    def _initialize_params(self, data, K, init='kmeans'):
         """
         Initialize GMM weights, mean, and covariance
 
@@ -33,7 +33,7 @@ class GMM(object):
         self.Sigma = np.zeros([K, D, D]) # all cluster covariances
         self.weights = 1.0/self.K * np.ones(self.K) # probabilities for multinomial draw of K gaussians
 
-        if method == 'kmeans_init':
+        if init == 'kmeans':
             # Randomly select K data points to be the arbitrary cluster means 
             idxs = np.random.choice(np.arange(N), size=self.K, replace=False)
             cluster_means = data[idxs]
@@ -56,36 +56,34 @@ class GMM(object):
     def _estep(self, data):
         # E-step
         N = data.shape[0]
+
         # gamma[i][j] is estimated probability of ith sample belonging to jth Gaussian
-        gamma = np.zeros([N, self.K])
-        for i in range(N):
-            for j in range(self.K):
-                mvar = multivariate_normal(self.mu[j], self.Sigma[j])
-                gamma[i][j] = self.weights[j] * mvar.pdf(data[i])
-            gamma[i, :] /= np.sum(gamma[i, :])
-        
-            assert np.isclose(1, np.sum(gamma[i, :]))
-        # TODO: can gamma calculation be optimized by implicitly summing the columns
+        gamma = np.zeros([self.K, N])
+        for j in range(self.K):
+            mvar = multivariate_normal(self.mu[j], self.Sigma[j])
+            gamma[j, :] = self.weights[j] * mvar.pdf(data)
+        # normalize 
+        row_sums = gamma.sum(axis=0)
+        gamma = gamma / row_sums[np.newaxis, :]
 
         return gamma
 
 
-
-    def fit(self, data, K, tolerance=1e-5, max_iterations=100, init='kmeans_init'):
+    def fit(self, data, K, tolerance=1e-5, max_iterations=100, init='kmeans'):
         """
         data is (N, D) measurements
         K is number of clusters
         """
         self.K = K
         if self.Sigma is None or self.Sigma.shape[0] != self.K:
-            self._initialize_params(data, self.K, method=init)
+            self._initialize_params(data, self.K, init=init)
 
         prev_ll = self._compute_ll(data)
 
         for _ in range(max_iterations):
 
             gamma = self._estep(data)
-            n_list = np.sum(gamma, 0) 
+            n_list = np.sum(gamma, 1) 
 
             # M-step (compute the actual updates, based on probs computed in E-step)
             # cluster weights are updated according to ~how well all the data fits
@@ -93,14 +91,14 @@ class GMM(object):
 
             n_inv = (1.0/n_list)[:, np.newaxis] # inv of unnormalized cluster probs
             # Derivation for this is given in references section of this repo
-            mu_update =  n_inv * np.dot(gamma.T, data) 
+            mu_update =  n_inv * np.dot(gamma, data) 
 
             Sigma_update = np.zeros([self.K, self.D, self.D])
 
             for j in range(self.K):
                 for i in range(self.N):
                     diff = (data[i] - mu_update[j])[np.newaxis, :]
-                    Sigma_update[j, :, :] += gamma[i][j]*(diff.T.dot(diff))
+                    Sigma_update[j, :, :] += gamma[j][i]*(diff.T.dot(diff))
 
             for j in range(self.K):
                 Sigma_update[j, :, :] *= 1.0/n_list[j]

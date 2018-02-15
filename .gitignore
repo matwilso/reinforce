@@ -1,4 +1,11 @@
+# MY STUFF
+# general
 *.swp
+*.swo
+# specific
+numpy/gmm/*.png
+
+
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

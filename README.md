@@ -1,7 +1,7 @@
 # Implementations
 
-These are generally not best practices or very efficient, but geared towards 
-understanding the methods.
+These are generally not best practices or very efficient. They are not for 
+practical use, but more geared towards understanding the methods.
 
 ## Index:
 

@@ -95,6 +95,7 @@ class GMM(object):
 
             Sigma_update = np.zeros([self.K, self.D, self.D])
 
+            # TODO: optimize this
             for j in range(self.K):
                 for i in range(self.N):
                     diff = (data[i] - mu_update[j])[np.newaxis, :]
@@ -141,6 +142,23 @@ class GMM(object):
         n0 = 1
         return mu0, Phi, m, n0
 
+
+
+    def eval(self, pts, axis=None):
+        """
+        Computes neg log probs of a given set of data points, evaluated at the
+        current fit (see dev notes, contour plotting for usage)
+        """
+        prob = np.zeros(pts.shape[0])
+        for j in range(self.K):
+            if axis is not None:
+                s = 2*axis
+                e = 2*(axis+1)
+                mvar = multivariate_normal(self.mu[j,s:e], self.Sigma[j,s:e,s:e])
+            else:
+                mvar = multivariate_normal(self.mu[j], self.Sigma[j])
+            prob += self.weights[j]*mvar.pdf(pts)
+        return -np.log(prob)
 
 
 if __name__ == '__main__':

@@ -5,8 +5,9 @@ practical use, but more geared towards understanding the methods.
 
 ## Index:
 
-If it's not indexed, it is probably a pretty rough draft.  If it is indexed,
-it may rough, but it is probably decent.
+If it's not indexed, it is probably a pretty rough draft and not worth your
+time looking through.  If it is indexed, it is probably a bit rough, but
+decently useful.
 
 ### numpy
 

@@ -1,8 +1,17 @@
 # Basic Policy Gradient methods
 
+## References
+
+
+- [] http://karpathy.github.io/2016/05/31/rl/
+- [] https://gist.github.com/karpathy/a4166c7fe253700972fcbc77e4ea32c5 
+- [] http://incompleteideas.net/book/the-book-2nd.html
+- [] https://github.com/dennybritz/reinforcement-learning/blob/master/PolicyGradient/Continuous%20MountainCar%20Actor%20Critic%20Solution.ipynb
+
+
 ## REINFORCE
 
-These train pretty quick.  The variance is pretty high though, so they waver up
+Thtse train pretty quick.  The variance is pretty high though, so they waver up
 and down around the max.
 
 ```

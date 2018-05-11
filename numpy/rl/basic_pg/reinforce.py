@@ -23,10 +23,23 @@ parser.add_argument('--env_id', type=str, default='LunarLander-v2',
                     help='gym environment to load')
 args = parser.parse_args()
 
-# TODO: add support for continuous actions
 # TODO: add weight saving and loading?
 
 """
+
+This file implements the standard vanilla REINFORCE algorithm, also
+known as Monte Carlo Policy Gradient.
+
+The main neural network logic is contained in the PolicyNetwork class,
+with more algorithm specific code, including action taking and loss
+computing contained in the REINFORCE class.
+
+
+    Resources:
+        Sutton and Barto: http://incompleteideas.net/book/the-book-2nd.html
+        Karpathy blog: http://karpathy.github.io/2016/05/31/rl/
+
+
     Glossary:
         (w.r.t.) = with respect to (as in taking gradient with respect to a variable)
         (h or logits) = numerical policy preferences, or unnormalized probailities of actions
@@ -41,7 +54,7 @@ class PolicyNetwork(object):
     {affine - relu } x (L - 1) - affine - softmax  
 
     """
-    def __init__(self, ob_n, ac_n, continuous, hidden_dim=500, dtype=np.float32):
+    def __init__(self, ob_n, ac_n, hidden_dim=500, dtype=np.float32):
         """
         Initialize a neural network to choose actions
 
@@ -55,7 +68,6 @@ class PolicyNetwork(object):
         """
         self.ob_n = ob_n
         self.ac_n = ac_n
-        self.continuous = continuous
         self.hidden_dim = H = hidden_dim
         self.dtype = dtype
 
@@ -130,25 +142,15 @@ class PolicyNetwork(object):
         relu1 = np.maximum(0, affine1)
         affine2 = relu1.dot(W2) + b2 
 
-        if self.continuous:
-            # TODO need to do better handling here, like switching to sigmoid
-            # if the range is not symmetric, or multiplying by a constant if it
-            # is not ranged [-1,1]
-
-            # pass through tanh to place output range in [-1,1]
-            #out = np.tanh(affine2)
-            out = affine2
-        else:
-            logits = affine2 # layer right before softmax (i also call this h)
-            # pass through a softmax to get probabilities 
-            probs = self._softmax(logits)
-            out = probs
+        logits = affine2 # layer right before softmax (i also call this h)
+        # pass through a softmax to get probabilities 
+        probs = self._softmax(logits)
 
         # cache values for backward (based on what is needed for analytic gradient calc)
         self._add_to_cache('affine1', x) 
         self._add_to_cache('relu1', affine1) 
         self._add_to_cache('affine2', relu1) 
-        return out
+        return probs
     
     def backward(self, dout):
         """
@@ -203,14 +205,9 @@ class REINFORCE(object):
     """
     def __init__(self, env):
         ob_n = env.observation_space.shape[0]
-        if type(env.action_space) == gym.spaces.box.Box:
-            ac_n = env.action_space.shape[0]
-            self.continuous = True
-        else:
-            ac_n = env.action_space.n
-            self.continuous = False
+        ac_n = env.action_space.n
 
-        self.policy = PolicyNetwork(ob_n, ac_n, self.continuous)
+        self.policy = PolicyNetwork(ob_n, ac_n)
 
     def select_action(self, obs):
         """
@@ -221,26 +218,14 @@ class REINFORCE(object):
         netout = self.policy.forward(obs)[0]
 
         std = 0.05 
-        if self.continuous: 
-            action = np.random.normal(netout, std)
-            action = action.clip(-1,1)
-            # I think the analytic gradient is undefined, because we are 
-            # clipping.  It should be
-            #dh = (action - netout)/std**2
-            # Instead, we have to compute it numerically
-            normal_dist = scipy.stats.norm(netout, std)
-            dh = normal_dist.logpdf(action)
-            print(netout, action, dh)
-            #dh = (1 - netout**2) * dnetout
-        else:
-            probs = netout
-            # randomly sample action based on probabilities
-            action = np.random.choice(self.policy.ac_n, p=probs)
-            # derivative that pulls in direction to make actions taken more probable
-            # this will be fed backwards later
-            # (see README.md for derivation)
-            dh = -1*probs
-            dh[action] += 1
+        probs = netout
+        # randomly sample action based on probabilities
+        action = np.random.choice(self.policy.ac_n, p=probs)
+        # derivative that pulls in direction to make actions taken more probable
+        # this will be fed backwards later
+        # (see README.md for derivation)
+        dh = -1*probs
+        dh[action] += 1
         self.policy.saved_action_gradients.append(dh)
     
         return action
@@ -249,7 +234,7 @@ class REINFORCE(object):
     def calculate_discounted_returns(self, rewards):
         """
         Calculate discounted reward and then normalize it
-        See Sutton book for definition 
+        (see Sutton book for definition)
         Params:
             rewards: list of rewards for every episode
         """
@@ -265,7 +250,7 @@ class REINFORCE(object):
     
     def finish_episode(self):
         """
-        At the end of the episode, calculate the discounted return for each time step
+        At the end of the episode, calculate the discounted return for each time step and update the model parameters
         """
         action_gradient = np.array(self.policy.saved_action_gradients)
         returns = self.calculate_discounted_returns(self.policy.rewards)

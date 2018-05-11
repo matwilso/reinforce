@@ -26,6 +26,17 @@ args = parser.parse_args()
 # TODO: add weight saving and loading?
 
 """
+This file implements the Actor-Critic algorithm (or at least a version of it). 
+I call it the batched version because this matches very closely to the flow
+of the REINFORCE algorithm and waits til the end of the episode to do the 
+updates. If you meditated on the code long enough (or checked out the
+Sutton book), you would see that it could be doing the update continuously, which is what is done in the other file.
+
+    Resources:
+        Sutton and Barto: http://incompleteideas.net/book/the-book-2nd.html
+        chapter 13 (read chapters 5 and 6 first on the differences between MC and TD methods. Actor-Critic is the TD equivalent of REINFORCE)
+
+
     Glossary:
         (w.r.t.) = with respect to (as in taking gradient with respect to a variable)
         (h or logits) = numerical policy preferences, or unnormalized probailities of actions
@@ -85,8 +96,9 @@ class PolicyNetwork(object):
             self.adam_configs[p] = d
 
         # RL specific bookkeeping
-        self.value = 0
-        self.next_value = 0
+        self.saved_action_gradients = []
+        self.saved_values = []
+        self.rewards = []
 
     ### HELPER FUNCTIONS
     def _zero_grads(self):

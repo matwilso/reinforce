@@ -6,7 +6,7 @@ practical use, but more geared towards understanding the methods.
 ## Index:
 
 If it's not indexed, it is probably a pretty rough draft and not worth your
-time looking through.  If it is indexed, it is probably a bit rough, but
+time looking through.  If it is indexed, it is probably a bit rough but
 decently useful.
 
 ### numpy
@@ -24,6 +24,7 @@ soon reinforce
 
 
 ### TODO:
+- implement tensorflow rl algos using [tensorforce](https://github.com/reinforceio/tensorforce) type API
 - create more official website documentation w/ Github Pages, or just have nice readmes
 - create some weight visualizer to somehow display the learned weights and how 
 different inputs cause trained neurons to fire

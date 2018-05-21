@@ -37,7 +37,6 @@ def calculate_discounted_returns(rewards):
     return returns
 
 
-
 class PolicyNetworkOpFactory(object):
     def __init__(self, ob_n, ac_n, hidden_dim=500, dtype=tf.float32, name='policy_network'):
         """
@@ -51,7 +50,7 @@ class PolicyNetworkOpFactory(object):
     def __call__(self, obs):
         with tf.variable_scope(self.name) as scope:
             x = tf.layers.dense(inputs=obs, units=self.hidden_dim, activation=tf.nn.relu)
-            x = tf.layers.dense(inputs=x, units=self.ob_n, activation=None)
+            x = tf.layers.dense(inputs=x, units=self.ac_n, activation=None)
         return x
 
 
@@ -63,15 +62,16 @@ class REINFORCE(object):
         self.ob_n = env.observation_space.shape[0]
         self.ac_n = env.action_space.n
 
-        self.obs = tf.placeholder(dtype=tf.int32, name="state")
-        self.action = tf.placeholder(dtype=tf.int32, name="action")
-        self.target = tf.placeholder(dtype=tf.float32, name="target")
+        self.obs = tf.placeholder(dtype=tf.float32, shape=[None, self.ob_n], name="obs")
+        self.action = tf.placeholder(dtype=tf.int32, shape=[None, self.ac_n], name="action")
+        self.target = tf.placeholder(dtype=tf.float32, shape=[None, 1], name="target")
+        self.taken_action = tf.placeholder(dtype=tf.int32, shape=[None, 1], name="taken_action")
 
         self.action_probs = tf.nn.softmax(PolicyNetworkOpFactory(self.ob_n, self.ac_n)(self.obs))
-        self.picked_action_prob = tf.gather(self.action_probs, self.action)
+        self.taken_action_probs = tf.gather(self.action_probs, self.taken_action)
         #self.not_taken_probs = ....
 
-        self.loss = -tf.log(self.picked_action_prob) * self.target
+        self.loss = -tf.log(self.taken_action_probs) * self.target
         # seems like this only updates the weights w.r.t the chosen action.  all others stay the same.
         # is that broken? probably just less efficient TODO
 
@@ -88,23 +88,23 @@ class REINFORCE(object):
         of dh to use to update weights
         """
         sess = sess or tf.get_default_session()
-        probs = sess.run(self.action_probs, {self.obs: obs})
+        probs = sess.run(self.action_probs, {self.obs: obs[None, :]})[0]
         action = np.random.choice(self.ac_n, p=probs)
         return action
     
     def update(self, ep_cache, sess=None):
         returns = calculate_discounted_returns(ep_cache.rewards)
         obs = np.array(ep_cache.obs)
-        taken_actions = np.array(ep_cache.actions)
+        #taken_actions = np.array(ep_cache.actions)
 
         sess = sess or tf.get_default_session()
-        feed_dict = {self.obs: obs, self.target: returns, self.action: taken_actions}
+        feed_dict = {self.obs: obs, self.target: returns[:, None]}
         sess.run([self.train_op], feed_dict=feed_dict)
 
 def main():
     """Run REINFORCE algorithm to train on the environment"""
-    EpCache = namedtuple("EpCache", ["obs", "actions", "rewards"])
 
+    EpCache = namedtuple("EpCache", ["obs", "actions", "rewards"])
     avg_reward = []
     for i_episode in count(1):
         ep_cache = EpCache([], [], [])
@@ -136,7 +136,8 @@ if __name__ == '__main__':
     env.seed(args.seed)
     np.random.seed(args.seed)
     reinforce = REINFORCE(env)
-    main()
 
-
+    with tf.Session() as sess:
+        sess.run(tf.global_variables_initializer())
+        main()
 

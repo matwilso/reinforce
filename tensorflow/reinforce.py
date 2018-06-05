@@ -37,21 +37,53 @@ def calculate_discounted_returns(rewards):
     return returns
 
 
-class PolicyNetworkOpFactory(object):
-    def __init__(self, ob_n, ac_n, hidden_dim=500, dtype=tf.float32, name='policy_network'):
-        """
-        """
+def normc_initializer(std=1.0, axis=0):
+    def _initializer(shape, dtype=None, partition_info=None):  # pylint: disable=W0613
+        out = np.random.randn(*shape).astype(np.float32)
+        out *= std / np.sqrt(np.square(out).sum(axis=axis, keepdims=True))
+        return tf.constant(out)
+    return _initializer
+
+# Class organization copied (roughly) from OpenAI baselines
+class PolicyNetwork(object):
+    def __init__(self, ob_n, ac_n, hidden_dim=200, name='policy_network'):
+        with tf.variable_scope(name):
+            self._init(ob_n, ac_n, hidden_dim)
+            self.scope = tf.get_variable_scope().name
+
+    def _init(self, ob_n, ac_n, hidden_dim):
         self.ob_n = ob_n
         self.ac_n = ac_n
-        self.hidden_dim = H = hidden_dim
-        self.dtype = dtype
-        self.name = name
 
-    def __call__(self, obs):
-        with tf.variable_scope(self.name) as scope:
-            x = tf.layers.dense(inputs=obs, units=self.hidden_dim, activation=tf.nn.relu)
-            x = tf.layers.dense(inputs=x, units=self.ac_n, activation=None)
-        return x
+        self.obs = tf.placeholder(dtype=tf.float32, shape=[None, ob_n])
+
+        x = tf.layers.dense(input=obs, units=hidden_dim, activation=tf.nn.relu, name='hidden')
+        self.logits = tf.layers.dense(input=x, units=self.ac_n, activation=None, kernel_initializer=normc_initializer(0.01), name='logits')
+
+        ac = self._sample()
+        stochastic = tf.placeholder(dtype=tf.bool, shape=())
+        self._act = self._run_gen(stochastic, obs, ac)
+
+    def act(self, ob):
+        ac1 = self._act(ob[None])
+        return ac1
+
+    def _sample(self):
+        u = tf.random_uniform(tf.shape(self.logits))
+        return tf.argmax(self.logits - tf.log(-tf.log(u)), axis=-1)
+
+    def _run_gen(self, ob, ac):
+        def run(ob_feed):
+            results = tf.get_default_session().run(ac, feed_dict={ob:ob_feed})
+            return results
+        return run
+
+    def nlogp(self, x):
+        one_hot_actions = tf.one_hot(x, self.ac_n) # TODO: check that this is right shape
+        # TODO: think about why this works
+        return tf.nn.softmax_cross_entropy_with_logits(
+                logits=self.logits, 
+                labels=one_hot_actions)
 
 
 class REINFORCE(object):
@@ -62,25 +94,18 @@ class REINFORCE(object):
         self.ob_n = env.observation_space.shape[0]
         self.ac_n = env.action_space.n
 
-        self.obs = tf.placeholder(dtype=tf.float32, shape=[None, self.ob_n], name="obs")
-        self.action = tf.placeholder(dtype=tf.int32, shape=[None, self.ac_n], name="action")
-        self.target = tf.placeholder(dtype=tf.float32, shape=[None, 1], name="target")
-        self.taken_action = tf.placeholder(dtype=tf.int32, shape=[None, 1], name="taken_action")
+        self.pi = PolicyNetwork(self.ob_n, self.ac_n)
 
-        self.action_probs = tf.nn.softmax(PolicyNetworkOpFactory(self.ob_n, self.ac_n)(self.obs))
-        self.taken_action_probs = tf.gather(self.action_probs, self.taken_action)
-        #self.not_taken_probs = ....
+        self.obs = self.pi.obs
+        self.ac = tf.placeholder(tf.int32, shape=[None])
+        self.loss = self.pi.nlogp(self.ac)
 
-        self.loss = -tf.log(self.taken_action_probs) * self.target
-        # seems like this only updates the weights w.r.t the chosen action.  all others stay the same.
-        # is that broken? probably just less efficient TODO
-
-        # it also looks like we need to pass the observations through the network again to calculate loss
-        # also the update looks like is has some bias because you update the weights of the network
-        # and the action you might now predict will change, but you are updating based on the old stuff.
-        # though maybe the gradient is still pushed in a decent direction
-        self.optimizer = tf.train.AdamOptimizer(learning_rate=1e-3)
+        self.optimizer = tf.train.AdamOptimizer(learning_rate=1e-4)
         self.train_op = self.optimizer.minimize(self.loss, global_step=tf.train.get_global_step())
+        # TODO: was updating the training pipeline to match baselines
+        # TODO: i may just want to copy baselines and add in baby algorithms. fork it and call
+        # it baby baselines. REINFORCE, AC, and commented like shit. A ramp up to baselines 
+        # proper
 
     def select_action(self, obs, sess=None):
         """

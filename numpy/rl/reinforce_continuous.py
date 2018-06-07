@@ -7,7 +7,7 @@ from itertools import count
 
 # make it possible to import from ../../utils/
 import os.path, sys
-sys.path.append(os.path.join(os.path.dirname(os.path.realpath(__file__)), '../..'))
+sys.path.append(os.path.join(os.path.dirname(os.path.realpath(__file__)), '..'))
 from utils.optim import adam
 
 parser = argparse.ArgumentParser(description='Numpy REINFORCE')
@@ -23,32 +23,15 @@ parser.add_argument('--env_id', type=str, default='LunarLander-v2',
                     help='gym environment to load')
 args = parser.parse_args()
 
-# TODO: add weight saving and loading?
-
 """
-
-This file implements the standard vanilla REINFORCE algorithm, also
-known as Monte Carlo Policy Gradient.
-
-The main neural network logic is contained in the PolicyNetwork class,
-with more algorithm specific code, including action taking and loss
-computing contained in the REINFORCE class.
-
-
-    Resources:
-        Sutton and Barto: http://incompleteideas.net/book/the-book-2nd.html
-        Karpathy blog: http://karpathy.github.io/2016/05/31/rl/
-
-
     Glossary:
         (w.r.t.) = with respect to (as in taking gradient with respect to a variable)
-        (h or logits) = numerical policy preferences, or unnormalized probailities of actions
 """
 
-class PolicyNetwork(object):
+class PolicyNetworkContinuous(object):
     """
-    Neural network policy. Takes in observations and returns probabilities of 
-    taking actions.
+    Neural network policy. Takes in observations and returns mean and
+    standard deviations for actions
 
     ARCHITECTURE:
     {affine - relu } x (L - 1) - affine - softmax  
@@ -70,6 +53,7 @@ class PolicyNetwork(object):
         self.ac_n = ac_n
         self.hidden_dim = H = hidden_dim
         self.dtype = dtype
+        self.out_n = ac_n * 2 # for mean and standard deviation
 
         # Initialize all weights (model params) with "Javier Initialization" 
         # weight matrix init = uniform(-1, 1) / sqrt(layer_input)
@@ -77,8 +61,8 @@ class PolicyNetwork(object):
         self.params = {}
         self.params['W1'] = (-1 + 2*np.random.rand(ob_n, H)) / np.sqrt(ob_n)
         self.params['b1'] = np.zeros(H)
-        self.params['W2'] = (-1 + 2*np.random.rand(H, ac_n)) / np.sqrt(H)
-        self.params['b2'] = np.zeros(ac_n)
+        self.params['W2'] = (-1 + 2*np.random.rand(H, self.out_n)) / np.sqrt(H)
+        self.params['b2'] = np.zeros(self.out_n)
 
         # Cast all parameters to the correct datatype
         for k, v in self.params.items():
@@ -94,6 +78,9 @@ class PolicyNetwork(object):
             d = {k: v for k, v in self.optimization_config.items()}
             self.adam_configs[p] = d
 
+        # RL specific bookkeeping
+        self.saved_action_gradients = []
+        self.rewards = []
 
     ### HELPER FUNCTIONS
     def _zero_grads(self):
@@ -138,16 +125,20 @@ class PolicyNetwork(object):
         affine1 = x.dot(W1) + b1
         relu1 = np.maximum(0, affine1)
         affine2 = relu1.dot(W2) + b2 
+        means, stds = np.split(affine2, 2, axis=1)
+        relu_stds = np.maximum(0, stds)
 
-        logits = affine2 # layer right before softmax (i also call this h)
-        # pass through a softmax to get probabilities 
-        probs = self._softmax(logits)
+        # TODO need to do better handling here, like switching to sigmoid
+        # if the range is not symmetric, or multiplying by a constant if it
+        # is not ranged [-1,1]
+
 
         # cache values for backward (based on what is needed for analytic gradient calc)
         self._add_to_cache('affine1', x) 
         self._add_to_cache('relu1', affine1) 
         self._add_to_cache('affine2', relu1) 
-        return probs
+        self._add_to_cache('relu_stds', stds) 
+        return means.squeeze(), relu_stds.squeeze()
     
     def backward(self, dout):
         """
@@ -170,6 +161,9 @@ class PolicyNetwork(object):
         fwd_relu1 = np.concatenate(self.cache['affine2'])
         fwd_affine1 = np.concatenate(self.cache['relu1'])
         fwd_x = np.concatenate(self.cache['affine1'])
+        fwd_relu_stds = np.concatenate(self.cache['relu_stds'])
+
+        dout[:,2:] = np.where(fwd_relu_stds > 0, dout[:,2:], 0)
 
         # Analytic gradient of last layer for backprop 
         # affine2 = W2*relu1 + b2
@@ -202,12 +196,12 @@ class REINFORCE(object):
     """
     def __init__(self, env):
         ob_n = env.observation_space.shape[0]
-        ac_n = env.action_space.n
+        if type(env.action_space) == gym.spaces.box.Box:
+            ac_n = env.action_space.shape[0]
+        else:
+            raise Exception("this only supports continuous envs")
 
-        self.policy = PolicyNetwork(ob_n, ac_n)
-        # RL specific bookkeeping
-        self.saved_action_gradients = []
-        self.rewards = []
+        self.policy = PolicyNetworkContinuous(ob_n, ac_n)
 
     def select_action(self, obs):
         """
@@ -215,17 +209,26 @@ class REINFORCE(object):
         of dh to use to update weights
         """
         obs = np.reshape(obs, [1, -1])
-        netout = self.policy.forward(obs)[0]
+        means, stds = self.policy.forward(obs)
+        stds += 1e-5
 
-        probs = netout
-        # randomly sample action based on probabilities
-        action = np.random.choice(self.policy.ac_n, p=probs)
-        # derivative that pulls in direction to make actions taken more probable
-        # this will be fed backwards later
-        # (see README.md for derivation)
-        dh = -1*probs
-        dh[action] += 1
-        self.saved_action_gradients.append(dh)
+        action = np.random.normal(means, stds)
+        action = action.clip(-1,1)
+
+        dmeans = (action - means)/stds**2
+        dstds = (-1/stds + ((action - means)**2 / (np.power(stds, 3))))
+        print(means, stds)
+
+        # I think the analytic gradient is undefined because we are clipping.  It should be
+        #dh = (action - netout)/std**2
+        # Instead, we have to compute it numerically
+        #normal_dist = scipy.stats.norm(means, stds)
+        #dmeans = normal_dist.logpdf(action) # TODO: does this need scaling by std?
+        #dstds = 1e-1 * normal_dist.entropy() # Add cross entropy cost to encourage exploration
+        dh = np.hstack([dmeans, dstds])
+
+        #dh = (1 - netout**2) * dnetout
+        self.policy.saved_action_gradients.append(dh)
     
         return action
 
@@ -233,7 +236,7 @@ class REINFORCE(object):
     def calculate_discounted_returns(self, rewards):
         """
         Calculate discounted reward and then normalize it
-        (see Sutton book for definition)
+        See Sutton book for definition 
         Params:
             rewards: list of rewards for every episode
         """
@@ -249,10 +252,10 @@ class REINFORCE(object):
     
     def finish_episode(self):
         """
-        At the end of the episode, calculate the discounted return for each time step and update the model parameters
+        At the end of the episode, calculate the discounted return for each time step
         """
-        action_gradient = np.array(self.saved_action_gradients)
-        returns = self.calculate_discounted_returns(self.rewards)
+        action_gradient = np.array(self.policy.saved_action_gradients)
+        returns = self.calculate_discounted_returns(self.policy.rewards)
         # Multiply the signal that makes actions taken more probable by the discounted
         # return of that action.  This will pull the weights in the direction that
         # makes *better* actions more probable.
@@ -270,8 +273,8 @@ class REINFORCE(object):
         self.policy._zero_grads() # required every call to adam
     
         # reset stuff
-        del self.rewards[:]
-        del self.saved_action_gradients[:]
+        del self.policy.rewards[:]
+        del self.policy.saved_action_gradients[:]
 
 
 def main():
@@ -284,7 +287,7 @@ def main():
             action = reinforce.select_action(obs)
             obs, reward, done, _ = env.step(action)
             ep_reward += reward
-            reinforce.rewards.append(reward)
+            reinforce.policy.rewards.append(reward)
 
             if args.render_interval != -1 and i_episode % args.render_interval == 0:
                 env.render()

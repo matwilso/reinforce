@@ -7,7 +7,7 @@ from itertools import count
 
 # make it possible to import from ../../utils/
 import os.path, sys
-sys.path.append(os.path.join(os.path.dirname(os.path.realpath(__file__)), '../..'))
+sys.path.append(os.path.join(os.path.dirname(os.path.realpath(__file__)), '..'))
 from utils.optim import adam
 
 parser = argparse.ArgumentParser(description='Numpy ActorCritic')

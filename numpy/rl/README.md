@@ -2,7 +2,6 @@
 
 ## References
 
-
 - [] http://karpathy.github.io/2016/05/31/rl/
 - [] https://gist.github.com/karpathy/a4166c7fe253700972fcbc77e4ea32c5 
 - [] http://incompleteideas.net/book/the-book-2nd.html
@@ -11,11 +10,11 @@
 
 ## REINFORCE
 
-Thtse train pretty quick.  The variance is pretty high though, so they waver up
-and down around the max.
+Thtse train pretty quick.  The variance is moderately high though, so you will 
+see a bit of wavering.
 
 ```
-./reinforce.py --env_id LunarLander-v2
+./reinforce.py --env_id LunarLander-v2 # default
 ```
 to view
 ```

@@ -7,10 +7,10 @@ from itertools import count
 
 # make it possible to import from ../../utils/
 import os.path, sys
-sys.path.append(os.path.join(os.path.dirname(os.path.realpath(__file__)), '../..'))
+sys.path.append(os.path.join(os.path.dirname(os.path.realpath(__file__)), '..'))
 from utils.optim import adam
 
-parser = argparse.ArgumentParser(description='Numpy REINFORCE')
+parser = argparse.ArgumentParser(description='Numpy ActorCritic')
 parser.add_argument('--gamma', type=float, default=0.99, metavar='G',
                     help='discount factor (default: 0.99)')
 parser.add_argument('--seed', type=int, default=42, metavar='N',
@@ -23,15 +23,34 @@ parser.add_argument('--env_id', type=str, default='LunarLander-v2',
                     help='gym environment to load')
 args = parser.parse_args()
 
+# TODO: add weight saving and loading?
+# TODO: compare the performance of AC vs. reinforce to see if AC is 
+# doing something weird different by having a cautious estimate of the
+# low value of the ground. Maybe this knowledge make it scared of crashing.
+# That would explain why eps take longer.
+# ... could also just be a bug
+
 """
+This file implements the Actor-Critic algorithm (or at least a version of it). 
+I call it the batched version because this matches very closely to the flow
+of the REINFORCE algorithm and waits til the end of the episode to do the 
+updates. If you meditated on the code long enough (or checked out the
+Sutton book), you would see that it could be doing the update continuously, which is what is done in the other file.
+
+    Resources:
+        Sutton and Barto: http://incompleteideas.net/book/the-book-2nd.html
+        chapter 13 (read chapters 5 and 6 first on the differences between MC and TD methods. Actor-Critic is the TD equivalent of REINFORCE)
+
+
     Glossary:
         (w.r.t.) = with respect to (as in taking gradient with respect to a variable)
+        (h or logits) = numerical policy preferences, or unnormalized probailities of actions
 """
 
-class PolicyNetworkContinuous(object):
+class PolicyNetwork(object):
     """
-    Neural network policy. Takes in observations and returns mean and
-    standard deviations for actions
+    Neural network policy. Takes in observations and returns probabilities of 
+    taking actions.
 
     ARCHITECTURE:
     {affine - relu } x (L - 1) - affine - softmax  
@@ -53,7 +72,6 @@ class PolicyNetworkContinuous(object):
         self.ac_n = ac_n
         self.hidden_dim = H = hidden_dim
         self.dtype = dtype
-        self.out_n = ac_n * 2 # for mean and standard deviation
 
         # Initialize all weights (model params) with "Javier Initialization" 
         # weight matrix init = uniform(-1, 1) / sqrt(layer_input)
@@ -61,8 +79,12 @@ class PolicyNetworkContinuous(object):
         self.params = {}
         self.params['W1'] = (-1 + 2*np.random.rand(ob_n, H)) / np.sqrt(ob_n)
         self.params['b1'] = np.zeros(H)
-        self.params['W2'] = (-1 + 2*np.random.rand(H, self.out_n)) / np.sqrt(H)
-        self.params['b2'] = np.zeros(self.out_n)
+        # action head (produce probabilities of taking all actions)
+        self.params['W2a'] = (-1 + 2*np.random.rand(H, ac_n)) / np.sqrt(H)
+        self.params['b2a'] = np.zeros(ac_n)
+        # state-value head (numerical *value* of the state)
+        self.params['W2b'] = (-1 + 2*np.random.rand(H, 1)) / np.sqrt(H)
+        self.params['b2b'] = np.zeros(1)
 
         # Cast all parameters to the correct datatype
         for k, v in self.params.items():
@@ -80,6 +102,7 @@ class PolicyNetworkContinuous(object):
 
         # RL specific bookkeeping
         self.saved_action_gradients = []
+        self.saved_values = []
         self.rewards = []
 
     ### HELPER FUNCTIONS
@@ -114,94 +137,74 @@ class PolicyNetworkContinuous(object):
         """
         Forward pass observations (x) through network to get probabilities 
         of taking each action 
-
-        [input] --> affine --> relu --> affine --> softmax/output
-
         """
         p = self.params
-        W1, b1, W2, b2 = p['W1'], p['b1'], p['W2'], p['b2']
+        W1, b1, W2a, b2a, W2b, b2b = p['W1'], p['b1'], p['W2a'], p['b2a'], p['W2b'], p['b2b']
 
         # forward computations
         affine1 = x.dot(W1) + b1
         relu1 = np.maximum(0, affine1)
-        affine2 = relu1.dot(W2) + b2 
-        means, stds = np.split(affine2, 2, axis=1)
-        relu_stds = np.maximum(0, stds)
+        # split the head. one for value estimation, the other for action probs
+        affine2a = relu1.dot(W2a) + b2a 
+        value = affine2b = relu1.dot(W2b) + b2b 
 
-        # TODO need to do better handling here, like switching to sigmoid
-        # if the range is not symmetric, or multiplying by a constant if it
-        # is not ranged [-1,1]
-
+        logits = affine2a # layer right before softmax (i also call this h)
+        # pass through a softmax to get probabilities 
+        probs = self._softmax(logits)
 
         # cache values for backward (based on what is needed for analytic gradient calc)
         self._add_to_cache('affine1', x) 
         self._add_to_cache('relu1', affine1) 
         self._add_to_cache('affine2', relu1) 
-        self._add_to_cache('relu_stds', stds) 
-        return means.squeeze(), relu_stds.squeeze()
+        return probs, value
     
-    def backward(self, dout):
+    def backward(self, dact, dvalue):
         """
         Backwards pass of the network.
-
-        affine <-- relu <-- affine <-- [gradient signal of softmax/output]
-
-        Params:
-            dout: gradient signal for backpropagation
-        
-
-        Chain rule the derivatives backward through all network computations 
-        to compute gradients of output probabilities w.r.t. each network weight.
-        (to be used in stochastic gradient descent optimization (adam))
         """
         p = self.params
-        W1, b1, W2, b2 = p['W1'], p['b1'], p['W2'], p['b2']
+        W1, b1, W2a, b2a, W2b, b2b = p['W1'], p['b1'], p['W2a'], p['b2a'], p['W2b'], p['W2b']
 
         # get values from network forward passes (for analytic gradient computations)
         fwd_relu1 = np.concatenate(self.cache['affine2'])
         fwd_affine1 = np.concatenate(self.cache['relu1'])
         fwd_x = np.concatenate(self.cache['affine1'])
-        fwd_relu_stds = np.concatenate(self.cache['relu_stds'])
 
-        dout[:,2:] = np.where(fwd_relu_stds > 0, dout[:,2:], 0)
-
-        # Analytic gradient of last layer for backprop 
-        # affine2 = W2*relu1 + b2
-        # drelu1 = W2 * dout
-        # dW2 = relu1 * dout
-        # db2 = dout
-        daffine1 = dout.dot(W2.T)
-        dW2 = fwd_relu1.T.dot(dout)
-        db2 = np.sum(dout, axis=0)
+        daffine1 = dact.dot(W2a.T) + (dvalue*W2b).T
+        # action gradient
+        dW2a = fwd_relu1.T.dot(dact)
+        db2a = np.sum(dact, axis=0)
+        # state value gradient
+        dW2b = fwd_relu1.T.dot(dvalue).sum(axis=0) 
+        db2b = np.sum(dvalue, axis=0) # note: may be just a scalar
 
         # gradient of relu (non-negative for values that were above 0 in forward)
         drelu1 = np.where(fwd_affine1 > 0, daffine1, 0)
 
-        # affine1 = W1*x + b1
+        # gradient of first affine
         dW1 = fwd_x.T.dot(drelu1)
         db1 = np.sum(drelu1)
 
         # update gradients 
         self._update_grad('W1', dW1)
         self._update_grad('b1', db1)
-        self._update_grad('W2', dW2)
-        self._update_grad('b2', db2)
+        self._update_grad('W2a', dW2a)
+        self._update_grad('b2a', db2a)
+        self._update_grad('W2b', dW2b)
+        self._update_grad('b2b', db2b)
 
         # reset cache for next backward pass
         self.cache = {}
 
-class REINFORCE(object):
+class ActorCritic(object):
     """
     Object to handle running the algorithm. Uses a PolicyNetwork
     """
     def __init__(self, env):
         ob_n = env.observation_space.shape[0]
-        if type(env.action_space) == gym.spaces.box.Box:
-            ac_n = env.action_space.shape[0]
-        else:
-            raise Exception("this only supports continuous envs")
+        ac_n = env.action_space.n
 
-        self.policy = PolicyNetworkContinuous(ob_n, ac_n)
+        self.policy = PolicyNetwork(ob_n, ac_n)
 
     def select_action(self, obs):
         """
@@ -209,62 +212,63 @@ class REINFORCE(object):
         of dh to use to update weights
         """
         obs = np.reshape(obs, [1, -1])
-        means, stds = self.policy.forward(obs)
-        stds += 1e-5
+        netout, value = self.policy.forward(obs)
+        netout = netout[0]
+        value = value[0]
 
-        action = np.random.normal(means, stds)
-        action = action.clip(-1,1)
-
-        dmeans = (action - means)/stds**2
-        dstds = (-1/stds + ((action - means)**2 / (np.power(stds, 3))))
-        print(means, stds)
-
-        # I think the analytic gradient is undefined because we are clipping.  It should be
-        #dh = (action - netout)/std**2
-        # Instead, we have to compute it numerically
-        #normal_dist = scipy.stats.norm(means, stds)
-        #dmeans = normal_dist.logpdf(action) # TODO: does this need scaling by std?
-        #dstds = 1e-1 * normal_dist.entropy() # Add cross entropy cost to encourage exploration
-        dh = np.hstack([dmeans, dstds])
-
-        #dh = (1 - netout**2) * dnetout
+        std = 0.05 
+        probs = netout
+        # randomly sample action based on probabilities
+        action = np.random.choice(self.policy.ac_n, p=probs)
+        # derivative that pulls in direction to make actions taken more probable
+        # this will be fed backwards later
+        # (see README.md for derivation)
+        dh = -1*probs
+        dh[action] += 1
         self.policy.saved_action_gradients.append(dh)
-    
+        # we save these and we have to wait to calculate the gradient
+        # till we have the value of the next state
+        # TODO: we could also do this incrementally
+        self.policy.saved_values.append(value)
         return action
 
 
-    def calculate_discounted_returns(self, rewards):
+    def calculate_grads(self, rewards):
         """
-        Calculate discounted reward and then normalize it
-        See Sutton book for definition 
-        Params:
-            rewards: list of rewards for every episode
+        update all at once
         """
-        returns = np.zeros(len(rewards))
-    
-        next_return = 0 # 0 because we start at the last timestep
-        for t in reversed(range(0, len(rewards))):
-            next_return = rewards[t] + args.gamma * next_return
-            returns[t] = next_return
-        # normalize for better statistical properties
-        returns = (returns - returns.mean()) / (returns.std() + np.finfo(np.float32).eps)
-        return returns
+        act_grads = np.zeros_like(rewards)
+        value_grads = np.zeros_like(rewards)
+
+        discount = 1
+        values = self.policy.saved_values
+
+        for t in range(len(rewards)-1):
+            td_error = rewards[t] + args.gamma*values[t+1] - values[t]
+            value_grads[t] = discount * td_error
+            act_grads[t] = discount * td_error
+            discount *= args.gamma 
+
+        # why does discount decrease throughout the episode?
+        
+        last_td = rewards[-1] - values[-1]
+        act_grads[-1] = discount * td_error
+        value_grads[-1] = discount * td_error
+        return act_grads, value_grads
     
     def finish_episode(self):
         """
         At the end of the episode, calculate the discounted return for each time step
         """
         action_gradient = np.array(self.policy.saved_action_gradients)
-        returns = self.calculate_discounted_returns(self.policy.rewards)
-        # Multiply the signal that makes actions taken more probable by the discounted
-        # return of that action.  This will pull the weights in the direction that
-        # makes *better* actions more probable.
+        act_td_grads, value_td_grads = self.calculate_grads(self.policy.rewards)
         self.policy_gradient = np.zeros(action_gradient.shape)
-        for t in range(0, len(returns)):
-            self.policy_gradient[t] = action_gradient[t] * returns[t]
+        self.value_gradient = np.array(value_td_grads)
+        for t in range(0, len(act_td_grads)):
+            self.policy_gradient[t] = action_gradient[t] * act_td_grads[t]
     
         # negate because we want gradient ascent, not descent
-        self.policy.backward(-self.policy_gradient)
+        self.policy.backward(-self.policy_gradient, -self.value_gradient)
     
         # run an optimization step on all of the model parameters
         for p in self.policy.params:
@@ -275,19 +279,20 @@ class REINFORCE(object):
         # reset stuff
         del self.policy.rewards[:]
         del self.policy.saved_action_gradients[:]
+        del self.policy.saved_values[:]
 
 
 def main():
-    """Run REINFORCE algorithm to train on the environment"""
+    """Run ActorCritic algorithm to train on the environment"""
     avg_reward = []
     for i_episode in count(1):
         ep_reward = 0
         obs = env.reset()
         for t in range(10000):  # Don't infinite loop while learning
-            action = reinforce.select_action(obs)
+            action = actor_critic.select_action(obs)
             obs, reward, done, _ = env.step(action)
             ep_reward += reward
-            reinforce.policy.rewards.append(reward)
+            actor_critic.policy.rewards.append(reward)
 
             if args.render_interval != -1 and i_episode % args.render_interval == 0:
                 env.render()
@@ -295,7 +300,7 @@ def main():
             if done:
                 break
 
-        reinforce.finish_episode()
+        actor_critic.finish_episode()
 
         if i_episode % args.log_interval == 0:
             print("Ave reward: {}".format(sum(avg_reward)/len(avg_reward)))
@@ -308,7 +313,7 @@ if __name__ == '__main__':
     env = gym.make(args.env_id)
     env.seed(args.seed)
     np.random.seed(args.seed)
-    reinforce = REINFORCE(env)
+    actor_critic = ActorCritic(env)
     main()
 
 

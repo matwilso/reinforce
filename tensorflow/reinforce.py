@@ -19,6 +19,31 @@ parser.add_argument('--env_id', type=str, default='LunarLander-v2',
                     help='gym environment to load')
 args = parser.parse_args()
 
+"""
+
+This file implements the standard vanilla REINFORCE algorithm, also
+known as Monte Carlo Policy Gradient. 
+
+This copies from the OpenAI baselines structure, which I found to be a bit
+confusing at first, but actually quite nice and clean. (Tensorflow is just a
+huge pain to learn, but once you do, it is not as bad.)
+
+
+    Resources:
+        Sutton and Barto: http://incompleteideas.net/book/the-book-2nd.html
+        Karpathy blog: http://karpathy.github.io/2016/05/31/rl/
+        OpenAI baselines PPO algorithm: https://github.com/openai/baselines/blob/master/baselines/ppo1/pposgd_simple.py
+
+
+    Glossary:
+        (logits) = numerical policy preferences, or unnormalized probailities of actions
+                        or last layer neural net
+"""
+
+
+
+
+# HELPERS
 def calculate_discounted_returns(rewards):
     """
     Calculate discounted reward and then normalize it
@@ -68,18 +93,37 @@ class PolicyNetwork(object):
         return ac1
 
     def _sample(self):
+        """Random sample an action"""
         u = tf.random_uniform(tf.shape(self.logits))
         return tf.argmax(self.logits - tf.log(-tf.log(u)), axis=-1)
 
     def _run_gen(self, ob, ac):
         def run(ob_feed):
+            """Run an observation through the nn to get an action
+            this will only be used to run the policy.  To train it, we
+            later feed in the observations, selected actions, and rewards all at once"""
             results = tf.get_default_session().run(ac, feed_dict={ob:ob_feed})
             return results
         return run
 
     def neglogp(self, x):
-        one_hot_actions = tf.one_hot(x, self.logits.get_shape().as_list()[-1]) # TODO: check that this is right shape
-        # TODO: think about why this works
+        """This computes the negative log probability of the given action.
+        It is used to pass the gradient back through the network for training
+        (in tf speak, this is the loss that we minimize)
+
+        NOTE: when we evaluate this, we are refeeding all of the observations,
+        chosen actions, and rewards back through the network.  Meaning we don't worry
+        about caching when we are running the env. This is just for ease in tensorflow.
+        """
+        one_hot_actions = tf.one_hot(x, self.ac_n)
+        # see http://cs231n.github.io/linear-classify/#softmax
+        # and http://karpathy.github.io/2016/05/31/rl/
+        # The math matches up because we are using the softmax to sample actions
+
+        # why is the chosen action the label?
+        # the chosen action is the label because that would create the signal that always
+        # make that one more probable. since we multiply this by the return signal, that will
+        # good actions more probable and bad actions less probable.
         return tf.nn.softmax_cross_entropy_with_logits(
                 logits=self.logits, 
                 labels=one_hot_actions)

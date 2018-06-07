@@ -1,30 +1,28 @@
-# Implementations
+# Reinforcement Learning (RL) Implementations
 
 These are generally not best practices or very efficient. They are not for 
 practical use, but more geared towards understanding the methods.
 
-## Index:
+All of these that are listed here do actually work and you can try running them and they 
+will train in a few minutes
 
-If it's not indexed, it is probably a pretty rough draft and not worth your
-time looking through.  If it is indexed, it is probably a bit rough but
-decently useful.
+## TensorFlow
 
-### numpy
+### Basic RL algorithms
+- [REINFORCE](/tensorflow/reinforce.py)
+	- Discrete actions, tested on OpenAI gym CartPole, LunarLander
 
-#### Reinforcement learning basics 
-- [Basic policy gradient method](/numpy/rl/basic_pg/)
-	- REINFORCE with 2 layer neural net
+## numpy
 
-#### Robotics/control/probability
-- [Gaussian Mixture Model](/numpy/gmm/)
+### Basic RL algorithms
+- [REINFORCE](/numpy/rl/reinforce.py/)
+	- Discrete actions, tested on OpenAI gym CartPole, LunarLander
+- [Actor-Critic (kind of)](/numpy/rl/actor_critic.py/)
+	- Weird batched version. still a WIP
 
-### tensorflow
-
-soon reinforce
 
 
 ### TODO:
-- implement tensorflow rl algos using [tensorforce](https://github.com/reinforceio/tensorforce) type API
 - create more official website documentation w/ Github Pages, or just have nice readmes
 - create some weight visualizer to somehow display the learned weights and how 
-different inputs cause trained neurons to fire
+different inputs cause trained neurons to fire (Tensorflow Beholder might be great for this)

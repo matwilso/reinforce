@@ -36,7 +36,6 @@ def calculate_discounted_returns(rewards):
     returns = (returns - returns.mean()) / (returns.std() + np.finfo(np.float32).eps)
     return returns
 
-
 def normc_initializer(std=1.0, axis=0):
     def _initializer(shape, dtype=None, partition_info=None):  # pylint: disable=W0613
         out = np.random.randn(*shape).astype(np.float32)
@@ -57,12 +56,12 @@ class PolicyNetwork(object):
 
         self.obs = tf.placeholder(dtype=tf.float32, shape=[None, ob_n])
 
-        x = tf.layers.dense(input=obs, units=hidden_dim, activation=tf.nn.relu, name='hidden')
-        self.logits = tf.layers.dense(input=x, units=self.ac_n, activation=None, kernel_initializer=normc_initializer(0.01), name='logits')
+        x = tf.layers.dense(inputs=self.obs, units=hidden_dim, activation=tf.nn.relu, name='hidden')
+        self.logits = tf.layers.dense(inputs=x, units=self.ac_n, activation=None, kernel_initializer=normc_initializer(0.01), name='logits')
 
         ac = self._sample()
         stochastic = tf.placeholder(dtype=tf.bool, shape=())
-        self._act = self._run_gen(stochastic, obs, ac)
+        self._act = self._run_gen(self.obs, ac)
 
     def act(self, ob):
         ac1 = self._act(ob[None])
@@ -78,8 +77,8 @@ class PolicyNetwork(object):
             return results
         return run
 
-    def nlogp(self, x):
-        one_hot_actions = tf.one_hot(x, self.ac_n) # TODO: check that this is right shape
+    def neglogp(self, x):
+        one_hot_actions = tf.one_hot(x, self.logits.get_shape().as_list()[-1]) # TODO: check that this is right shape
         # TODO: think about why this works
         return tf.nn.softmax_cross_entropy_with_logits(
                 logits=self.logits, 
@@ -97,8 +96,9 @@ class REINFORCE(object):
         self.pi = PolicyNetwork(self.ob_n, self.ac_n)
 
         self.obs = self.pi.obs
-        self.ac = tf.placeholder(tf.int32, shape=[None])
-        self.loss = self.pi.nlogp(self.ac)
+        self.ac = tf.placeholder(tf.int32, shape=[None], name='ac')
+        self.atarg = tf.placeholder(tf.float32, shape=[None], name='atarg')
+        self.loss = self.atarg * self.pi.neglogp(self.ac)
 
         self.optimizer = tf.train.AdamOptimizer(learning_rate=1e-4)
         self.train_op = self.optimizer.minimize(self.loss, global_step=tf.train.get_global_step())
@@ -113,17 +113,15 @@ class REINFORCE(object):
         of dh to use to update weights
         """
         sess = sess or tf.get_default_session()
-        probs = sess.run(self.action_probs, {self.obs: obs[None, :]})[0]
-        action = np.random.choice(self.ac_n, p=probs)
-        return action
+        return self.pi.act(obs)
     
     def update(self, ep_cache, sess=None):
         returns = calculate_discounted_returns(ep_cache.rewards)
         obs = np.array(ep_cache.obs)
-        #taken_actions = np.array(ep_cache.actions)
+        taken_actions = np.array(ep_cache.actions)
 
         sess = sess or tf.get_default_session()
-        feed_dict = {self.obs: obs, self.target: returns[:, None]}
+        feed_dict = {self.obs: obs, self.ac: taken_actions, self.atarg: returns}
         sess.run([self.train_op], feed_dict=feed_dict)
 
 def main():
@@ -135,7 +133,7 @@ def main():
         ep_cache = EpCache([], [], [])
         obs = env.reset()
         for t in range(10000):  # Don't infinite loop while learning
-            action = reinforce.select_action(obs)
+            action = reinforce.select_action(obs)[0]
             obs, reward, done, _ = env.step(action)
             
             ep_cache.obs.append(obs)

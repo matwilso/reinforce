@@ -100,7 +100,7 @@ class REINFORCE(object):
         self.atarg = tf.placeholder(tf.float32, shape=[None], name='atarg')
         self.loss = self.atarg * self.pi.neglogp(self.ac)
 
-        self.optimizer = tf.train.AdamOptimizer(learning_rate=1e-4)
+        self.optimizer = tf.train.AdamOptimizer(learning_rate=1e-3)
         self.train_op = self.optimizer.minimize(self.loss, global_step=tf.train.get_global_step())
         # TODO: was updating the training pipeline to match baselines
         # TODO: i may just want to copy baselines and add in baby algorithms. fork it and call
@@ -134,10 +134,12 @@ def main():
         obs = env.reset()
         for t in range(10000):  # Don't infinite loop while learning
             action = reinforce.select_action(obs)[0]
-            obs, reward, done, _ = env.step(action)
-            
+
             ep_cache.obs.append(obs)
             ep_cache.actions.append(action)
+
+            obs, reward, done, _ = env.step(action)
+            
             ep_cache.rewards.append(reward)
 
             if args.render_interval != -1 and i_episode % args.render_interval == 0:

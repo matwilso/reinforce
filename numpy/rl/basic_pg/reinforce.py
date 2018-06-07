@@ -94,9 +94,6 @@ class PolicyNetwork(object):
             d = {k: v for k, v in self.optimization_config.items()}
             self.adam_configs[p] = d
 
-        # RL specific bookkeeping
-        self.saved_action_gradients = []
-        self.rewards = []
 
     ### HELPER FUNCTIONS
     def _zero_grads(self):
@@ -208,6 +205,9 @@ class REINFORCE(object):
         ac_n = env.action_space.n
 
         self.policy = PolicyNetwork(ob_n, ac_n)
+        # RL specific bookkeeping
+        self.saved_action_gradients = []
+        self.rewards = []
 
     def select_action(self, obs):
         """
@@ -217,7 +217,6 @@ class REINFORCE(object):
         obs = np.reshape(obs, [1, -1])
         netout = self.policy.forward(obs)[0]
 
-        std = 0.05 
         probs = netout
         # randomly sample action based on probabilities
         action = np.random.choice(self.policy.ac_n, p=probs)
@@ -226,7 +225,7 @@ class REINFORCE(object):
         # (see README.md for derivation)
         dh = -1*probs
         dh[action] += 1
-        self.policy.saved_action_gradients.append(dh)
+        self.saved_action_gradients.append(dh)
     
         return action
 
@@ -252,8 +251,8 @@ class REINFORCE(object):
         """
         At the end of the episode, calculate the discounted return for each time step and update the model parameters
         """
-        action_gradient = np.array(self.policy.saved_action_gradients)
-        returns = self.calculate_discounted_returns(self.policy.rewards)
+        action_gradient = np.array(self.saved_action_gradients)
+        returns = self.calculate_discounted_returns(self.rewards)
         # Multiply the signal that makes actions taken more probable by the discounted
         # return of that action.  This will pull the weights in the direction that
         # makes *better* actions more probable.
@@ -271,8 +270,8 @@ class REINFORCE(object):
         self.policy._zero_grads() # required every call to adam
     
         # reset stuff
-        del self.policy.rewards[:]
-        del self.policy.saved_action_gradients[:]
+        del self.rewards[:]
+        del self.saved_action_gradients[:]
 
 
 def main():
@@ -285,7 +284,7 @@ def main():
             action = reinforce.select_action(obs)
             obs, reward, done, _ = env.step(action)
             ep_reward += reward
-            reinforce.policy.rewards.append(reward)
+            reinforce.rewards.append(reward)
 
             if args.render_interval != -1 and i_episode % args.render_interval == 0:
                 env.render()

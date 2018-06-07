@@ -24,6 +24,11 @@ parser.add_argument('--env_id', type=str, default='LunarLander-v2',
 args = parser.parse_args()
 
 # TODO: add weight saving and loading?
+# TODO: compare the performance of AC vs. reinforce to see if AC is 
+# doing something weird different by having a cautious estimate of the
+# low value of the ground. Maybe this knowledge make it scared of crashing.
+# That would explain why eps take longer.
+# ... could also just be a bug
 
 """
 This file implements the Actor-Critic algorithm (or at least a version of it). 

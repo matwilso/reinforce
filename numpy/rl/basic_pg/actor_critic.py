@@ -84,9 +84,6 @@ class PolicyNetwork(object):
             d = {k: v for k, v in self.optimization_config.items()}
             self.adam_configs[p] = d
 
-        # RL specific bookkeeping
-        self.value = 0
-        self.next_value = 0
 
     ### HELPER FUNCTIONS
     def _zero_grads(self):
@@ -186,10 +183,17 @@ class ActorCritic(object):
     def __init__(self, env):
         ob_n = env.observation_space.shape[0]
         ac_n = env.action_space.n
-
         self.policy = PolicyNetwork(ob_n, ac_n)
+        self.reset()
 
-    def select_action(self, obs):
+    def reset(self):
+        # RL bookkeeping
+        self.last_value = None
+        self.value = None
+        self.last_reward = None
+        self.discount = 1
+
+    def act(self, obs):
         """
         Pass observations through network and sample an action to take. Keep track
         of dh to use to update weights
@@ -215,6 +219,11 @@ class ActorCritic(object):
         self.policy.saved_values.append(value)
         return action
 
+    def step(self):
+        self.discount *= args.gamma # what is the motivation for this?
+        td_error = self.last_reward + (args.gamma*self.value) - self.last_value
+        value_grad = discount * td_error
+        act_grad = discount * td_error
 
     def calculate_grads(self, rewards):
         """
@@ -258,24 +267,24 @@ class ActorCritic(object):
             next_w, self.policy.adam_configs[p] = adam(self.policy.params[p], self.policy.grads[p], config=self.policy.adam_configs[p])
             self.policy.params[p] = next_w
         self.policy._zero_grads() # required every call to adam
-    
-        # reset stuff
-        del self.policy.rewards[:]
-        del self.policy.saved_action_gradients[:]
-        del self.policy.saved_values[:]
-
 
 def main():
     """Run ActorCritic algorithm to train on the environment"""
     avg_reward = []
     for i_episode in count(1):
         ep_reward = 0
+        actor_critic.reset()
         obs = env.reset()
         for t in range(10000):  # Don't infinite loop while learning
-            action = actor_critic.select_action(obs)
+            action = actor_critic.act(obs)
+            # step here because you have now computed the state value and
+            # it makes it easier to deal with reward
+            actor_critic.step()
+            # take action
             obs, reward, done, _ = env.step(action)
+            actor_critic.last_reward = reward
+
             ep_reward += reward
-            actor_critic.policy.rewards.append(reward)
 
             if args.render_interval != -1 and i_episode % args.render_interval == 0:
                 env.render()

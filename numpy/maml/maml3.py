@@ -39,7 +39,7 @@ may want to build a separate class for optimization
 
 """
 
-def build_params(name, hidden_dim=[200]):
+def build_params(name, hidden_dim=[40,40]):
     # Initialize all weights (model params) with "Xavier Initialization" 
     # weight matrix init = uniform(-1, 1) / sqrt(layer_input)
     # bias init = zeros()
@@ -47,8 +47,10 @@ def build_params(name, hidden_dim=[200]):
     d['name'] = name
     d['W1'] = (-1 + 2*np.random.rand(1, hidden_dim[0])) / np.sqrt(1)
     d['b1'] = np.zeros(hidden_dim[0])
-    d['W2'] = (-1 + 2*np.random.rand(hidden_dim[0], 1)) / np.sqrt(hidden_dim[0])
+    d['W2'] = (-1 + 2*np.random.rand(hidden_dim[0], hidden_dim[1])) / np.sqrt(hidden_dim[0])
     d['b2'] = np.zeros(1)
+    d['W3'] = (-1 + 2*np.random.rand(hidden_dim[1], 1)) / np.sqrt(hidden_dim[1])
+    d['b3'] = np.zeros(1)
 
     # Cast all parameters to the correct datatype
     for k, v in d.items():
@@ -81,34 +83,47 @@ class Network(object):
 
     def forward(self, x, params, cache=None):
         p = params
-        W1, b1, W2, b2 = p['W1'], p['b1'], p['W2'], p['b2']
+        W1, b1, W2, b2, W3, b3 = p['W1'], p['b1'], p['W2'], p['b2'], p['W3'], p['b3']
 
         # forward computations
         affine1 = x.dot(W1) + b1
         relu1 = np.maximum(0, affine1)
-        pred = affine2 = relu1.dot(W2) + b2 
+        affine2 = relu1.dot(W2) + b2 
+        relu2 = np.maximum(0, affine2)
+        pred = affine3 = relu2.dot(W3) + b3
         
         if cache is not None:
             # cache values for backward (based on what is needed for analytic gradient calc)
             cache['fwd_x'].append(x)
             cache['fwd_affine1'].append(affine1)
             cache['fwd_relu1'].append(relu1)
+            cache['fwd_affine2'].append(affine2)
+            cache['fwd_relu2'].append(relu2)
 
         return pred
     
     def backward(self, dout, params, cache, grads):
         p = params
-        W1, b1, W2, b2 = p['W1'], p['b1'], p['W2'], p['b2']
+        W1, b1, W2, b2, W3, b3 = p['W1'], p['b1'], p['W2'], p['b2'], p['W3'], p['b3']
 
         # get values from network forward passes (for analytic gradient computations)
+        fwd_relu2 = np.concatenate(cache['fwd_relu2'])
+        fwd_affine2 = np.concatenate(cache['fwd_affine2'])
         fwd_relu1 = np.concatenate(cache['fwd_relu1'])
         fwd_affine1 = np.concatenate(cache['fwd_affine1'])
         fwd_x = np.concatenate(cache['fwd_x'])
 
+        # d 3rd layer
+        daffine2 = dout.dot(W3.T)
+        dW3 = fwd_relu2.T.dot(dout)
+        db3 = np.sum(dout, axis=0)
+
+        drelu2 = np.where(fwd_affine2 > 0, daffine2, 0)
+
         # d 2nd layer 
-        daffine1 = dout.dot(W2.T)
-        dW2 = fwd_relu1.T.dot(dout)
-        db2 = np.sum(dout, axis=0)
+        daffine1 = drelu2.dot(W2.T)
+        dW2 = fwd_relu1.T.dot(drelu2)
+        db2 = np.sum(drelu2, axis=0)
 
         drelu1 = np.where(fwd_affine1 > 0, daffine1, 0)
 
@@ -121,6 +136,8 @@ class Network(object):
         grads['b1'] = db1
         grads['W2'] = dW2
         grads['b2'] = db2
+        grads['W3'] = dW3
+        grads['b3'] = db3
 
 def test():
     # Test the network gradient 
@@ -132,8 +149,10 @@ def test():
     x = np.random.randn(15, 1)
     W1 = np.random.randn(1, 40)
     b1 = np.random.randn(40)
-    W2 = np.random.randn(40, 1)
-    b2 = np.random.randn(1)
+    W2 = np.random.randn(40, 40)
+    b2 = np.random.randn(40)
+    W3 = np.random.randn(40, 1)
+    b3 = np.random.randn(1)
 
     dout = np.random.randn(15, 1)
 
@@ -142,6 +161,8 @@ def test():
     p['b1'] = b1
     p['W2'] = W2
     p['b2'] = b2
+    p['W3'] = W3
+    p['b3'] = b3
 
     def rep_param(params, name, val):
         clean_params = copy.deepcopy(params)
@@ -152,6 +173,8 @@ def test():
     db1_num = eval_numerical_gradient_array(lambda b: nn.forward(x, rep_param(params, 'b1', b)), b1, dout)
     dW2_num = eval_numerical_gradient_array(lambda w: nn.forward(x, rep_param(params, 'W2', w)), W2, dout)
     db2_num = eval_numerical_gradient_array(lambda b: nn.forward(x, rep_param(params, 'b2', b)), b2, dout)
+    dW3_num = eval_numerical_gradient_array(lambda w: nn.forward(x, rep_param(params, 'W3', w)), W3, dout)
+    db3_num = eval_numerical_gradient_array(lambda b: nn.forward(x, rep_param(params, 'b3', b)), b3, dout)
 
     out = nn.forward(x, params, cache)
     nn.backward(dout, params, cache, grads)
@@ -163,6 +186,8 @@ def test():
     print('db1 error: ', rel_error(db1_num, grads['b1']))
     print('dW2 error: ', rel_error(dW2_num, grads['W2']))
     print('db2 error: ', rel_error(db2_num, grads['b2']))
+    print('dW3 error: ', rel_error(dW3_num, grads['W3']))
+    print('db3 error: ', rel_error(db3_num, grads['b3']))
     print()
 
 

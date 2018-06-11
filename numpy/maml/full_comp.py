@@ -1,13 +1,14 @@
 # TODO: may want to rewrite the primes as just another dictionary, so its easier
-# first pass is a, second pass is b
 # TODO: think about why doing this makes sense. how did they come up with this?
 # TODO: a gradient check on the meta pass
-# NOTE: junctions add on the way back
 # TODO: go over this again.  check the diagram and do another pass
+
+# NOTE: junctions add on the way back
+# NOTE: first pass is a, second pass is b
 
 ALPHA = 0.01
 
-def forward(xa, xb, params, cache=None):
+def meta_forward(xa, xb, params, cache=None):
     p = params
     W1, b1, W2, b2 = p['W1'], p['b1'], p['W2'], p['b2']
 
@@ -20,12 +21,14 @@ def forward(xa, xb, params, cache=None):
 
     dout_a = 1 * 2*(pred_a - label_a)
 
-    daffine1_a = dout_a.dot(W2.T)
+    drelu1_a = dout_a.dot(W2.T)
     dW2 = relu1_a.T.dot(dout_a)
     db2 = np.sum(dout_a, axis=0)
-    drelu1_a = np.where(affine1_a > 0, daffine1_a, 0)
-    dW1 = x_a.T.dot(drelu1_a)
-    db1 = np.sum(drelu1_a, axis=0)
+
+    daffine1_a = np.where(affine1_a > 0, drelu1, 0)
+
+    dW1 = x_a.T.dot(daffine1_a)
+    db1 = np.sum(daffine1_a, axis=0)
 
     # Forward on fast weights
     # (b)
@@ -43,19 +46,19 @@ def forward(xa, xb, params, cache=None):
 
     return pred_b
 
-def backward():
+def meta_backward():
     dout_b = 1
 
     # deriv w.r.t b (lower half)
     # d 1st layer
-    daffine1_b = dout_b.dot(W2_prime.T)
+    drelu1_b = dout_b.dot(W2_prime.T)
     dW2_prime = relu1_b.T.dot(dout_b)
     db2_prime = np.sum(dout_b, axis=0)
 
-    drelu1_b = np.where(affine1_b > 0, daffine1_b, 0)
+    daffine1_b = np.where(affine1_b > 0, drelu1_b, 0)
     # d 2nd layer
-    dW1_prime = x_a.T.dot(drelu1_b)
-    db1_prime = np.sum(drelu1_b, axis=0)
+    dW1_prime = x_a.T.dot(daffine1_b)
+    db1_prime = np.sum(daffine1_b, axis=0)
 
     # deriv w.r.t a (upper half)
 
@@ -84,5 +87,11 @@ def backward():
     dW2 += relu1_a.T.dot(dpred_a)
     db2 += np.sum(dpred_a, axis=0)
 
-    drelu1_a += 
+    drelu1_a += dpred_a.dot(W2.T)
 
+    daffine1_a = np.where(affine1_a > 0, drelu1_a, 0)
+
+    dW1 += daffine1.T.dot(daffine1_a)
+    db1 += np.sum(daffine1_a, axis=0)
+
+# i had just hit that annoying thing where I had misnamed those nodes

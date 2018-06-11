@@ -106,15 +106,15 @@ class Network(object):
         fwd_x = np.concatenate(cache['fwd_x'])
 
         # d 2nd layer 
-        daffine1 = dout.dot(W2.T)
+        drelu1 = dout.dot(W2.T)
         dW2 = fwd_relu1.T.dot(dout)
         db2 = np.sum(dout, axis=0)
 
-        drelu1 = np.where(fwd_affine1 > 0, daffine1, 0)
+        daffine1 = np.where(fwd_affine1 > 0, drelu1, 0)
 
         # d 1st layer
-        dW1 = fwd_x.T.dot(drelu1)
-        db1 = np.sum(drelu1, axis=0)
+        dW1 = fwd_x.T.dot(daffine1)
+        db1 = np.sum(daffine1, axis=0)
 
         # update gradients 
         grads['W1'] = dW1

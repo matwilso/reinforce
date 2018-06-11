@@ -71,7 +71,7 @@ class PolicyNetwork(object):
         self.hidden_dim = H = hidden_dim
         self.dtype = dtype
 
-        # Initialize all weights (model params) with "Javier Initialization" 
+        # Initialize all weights (model params) with "Xavier Initialization" 
         # weight matrix init = uniform(-1, 1) / sqrt(layer_input)
         # bias init = zeros()
         self.params = {}
@@ -110,7 +110,7 @@ class PolicyNetwork(object):
 
     def _update_grad(self, name, val):
         """Helper fucntion to set gradient without having to do checks"""
-        if name in self.cache:
+        if name in self.grads:
             self.grads[name] += val
         else:
             self.grads[name] = val
@@ -144,9 +144,9 @@ class PolicyNetwork(object):
         probs = self._softmax(logits)
 
         # cache values for backward (based on what is needed for analytic gradient calc)
-        self._add_to_cache('affine1', x) 
-        self._add_to_cache('relu1', affine1) 
-        self._add_to_cache('affine2', relu1) 
+        self._add_to_cache('fwd_x', x) 
+        self._add_to_cache('fwd_affine1', affine1) 
+        self._add_to_cache('fwd_relu1', relu1) 
         return probs
     
     def backward(self, dout):
@@ -167,25 +167,26 @@ class PolicyNetwork(object):
         W1, b1, W2, b2 = p['W1'], p['b1'], p['W2'], p['b2']
 
         # get values from network forward passes (for analytic gradient computations)
-        fwd_relu1 = np.concatenate(self.cache['affine2'])
-        fwd_affine1 = np.concatenate(self.cache['relu1'])
-        fwd_x = np.concatenate(self.cache['affine1'])
+        fwd_relu1 = np.concatenate(self.cache['fwd_relu1'])
+        fwd_affine1 = np.concatenate(self.cache['fwd_affine1'])
+        fwd_x = np.concatenate(self.cache['fwd_x'])
 
         # Analytic gradient of last layer for backprop 
         # affine2 = W2*relu1 + b2
         # drelu1 = W2 * dout
         # dW2 = relu1 * dout
         # db2 = dout
-        daffine1 = dout.dot(W2.T)
+        drelu1 = dout.dot(W2.T)
         dW2 = fwd_relu1.T.dot(dout)
         db2 = np.sum(dout, axis=0)
 
         # gradient of relu (non-negative for values that were above 0 in forward)
-        drelu1 = np.where(fwd_affine1 > 0, daffine1, 0)
+        daffine1 = np.where(fwd_affine1 > 0, daffine1, 0)
 
         # affine1 = W1*x + b1
-        dW1 = fwd_x.T.dot(drelu1)
-        db1 = np.sum(drelu1)
+        # dx
+        dW1 = fwd_x.T.dot(daffine1)
+        db1 = np.sum(daffine1)
 
         # update gradients 
         self._update_grad('W1', dW1)

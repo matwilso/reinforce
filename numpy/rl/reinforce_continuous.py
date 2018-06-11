@@ -55,7 +55,7 @@ class PolicyNetworkContinuous(object):
         self.dtype = dtype
         self.out_n = ac_n * 2 # for mean and standard deviation
 
-        # Initialize all weights (model params) with "Javier Initialization" 
+        # Initialize all weights (model params) with "Xavier Initialization" 
         # weight matrix init = uniform(-1, 1) / sqrt(layer_input)
         # bias init = zeros()
         self.params = {}
@@ -97,7 +97,7 @@ class PolicyNetworkContinuous(object):
 
     def _update_grad(self, name, val):
         """Helper fucntion to set gradient without having to do checks"""
-        if name in self.cache:
+        if name in self.grads:
             self.grads[name] += val
         else:
             self.grads[name] = val
@@ -170,16 +170,16 @@ class PolicyNetworkContinuous(object):
         # drelu1 = W2 * dout
         # dW2 = relu1 * dout
         # db2 = dout
-        daffine1 = dout.dot(W2.T)
+        drelu1 = dout.dot(W2.T)
         dW2 = fwd_relu1.T.dot(dout)
         db2 = np.sum(dout, axis=0)
 
         # gradient of relu (non-negative for values that were above 0 in forward)
-        drelu1 = np.where(fwd_affine1 > 0, daffine1, 0)
+        daffine1 = np.where(fwd_affine1 > 0, drelu1, 0)
 
         # affine1 = W1*x + b1
-        dW1 = fwd_x.T.dot(drelu1)
-        db1 = np.sum(drelu1)
+        dW1 = fwd_x.T.dot(daffine1)
+        db1 = np.sum(daffine1)
 
         # update gradients 
         self._update_grad('W1', dW1)

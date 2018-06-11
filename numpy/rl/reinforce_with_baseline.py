@@ -52,7 +52,7 @@ class Policy(object):
 
         self.num_layers = len(self.hidden_dims)  
 
-        # Initialize all weights (model params) with "Javier Initialization" 
+        # Initialize all weights (model params) with "Xavier Initialization" 
         # weight matrix init = uniform(-1, 1) / sqrt(layer_input)
         # bias init = zeros()
         self.params = {}
@@ -100,7 +100,7 @@ class Policy(object):
 
     def _set_grad(self, name, val):
         """Helper fucntion to set gradient without having to do checks"""
-        if name in self.cache:
+
             self.grads[name] += val
         else:
             self.grads[name] = val

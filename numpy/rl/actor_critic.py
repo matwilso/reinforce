@@ -57,7 +57,7 @@ class PolicyNetwork(object):
         self.hidden_dim = H = hidden_dim
         self.dtype = dtype
 
-        # Initialize all weights (model params) with "Javier Initialization" 
+        # Initialize all weights (model params) with "Xavier Initialization" 
         # weight matrix init = uniform(-1, 1) / sqrt(layer_input)
         # bias init = zeros()
         self.params = {}
@@ -100,7 +100,7 @@ class PolicyNetwork(object):
 
     def _update_grad(self, name, val):
         """Helper fucntion to set gradient without having to do checks"""
-        if name in self.cache:
+        if name in self.grads:
             self.grads[name] += val
         else:
             self.grads[name] = val
@@ -150,7 +150,7 @@ class PolicyNetwork(object):
         fwd_affine1 = np.concatenate(self.cache['relu1'])
         fwd_x = np.concatenate(self.cache['affine1'])
 
-        daffine1 = dact.dot(W2a.T) + (dvalue*W2b).T
+        drelu1 = dact.dot(W2a.T) + (dvalue*W2b).T
         # action gradient
         dW2a = fwd_relu1.T.dot(dact)
         db2a = np.sum(dact, axis=0)
@@ -159,11 +159,11 @@ class PolicyNetwork(object):
         db2b = np.sum(dvalue, axis=0) # note: may be just a scalar
 
         # gradient of relu (non-negative for values that were above 0 in forward)
-        drelu1 = np.where(fwd_affine1 > 0, daffine1, 0)
+        daffine1 = np.where(fwd_affine1 > 0, drelu1, 0)
 
         # gradient of first affine
-        dW1 = fwd_x.T.dot(drelu1)
-        db1 = np.sum(drelu1)
+        dW1 = fwd_x.T.dot(daffine1)
+        db1 = np.sum(daffine1)
 
         # update gradients 
         self._update_grad('W1', dW1)

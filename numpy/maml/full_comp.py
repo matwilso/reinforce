@@ -6,6 +6,13 @@
 # NOTE: junctions add on the way back
 # NOTE: first pass is a, second pass is b
 
+# NOTES: how to debug the grad? Just go through line-by-line 
+# + line-by-line
+# - chop off some of the net so it's a bit more manageable
+# - what about anything tricky with the dW's that already exist from the forward pass
+# - something wrong with the testing code
+# - any variables being modified that are screwing things up
+
 import copy
 import numpy as np
 
@@ -123,7 +130,7 @@ if __name__ == '__main__':
     # Test the network gradient 
     grads = GradDict()
 
-    np.random.seed(231)
+    np.random.seed(233)
     x_a = np.random.randn(15, 1)
     x_b = np.random.randn(15, 1)
     label = np.random.randn(15, 1)
@@ -145,14 +152,22 @@ if __name__ == '__main__':
         clean_params[name] = val
         return clean_params
 
-    #import ipdb; ipdb.set_trace()
-    dW1_num = eval_numerical_gradient_array(lambda w: meta_forward(x_a, x_b, label, rep_param(params, 'W1', w)), W1, dout)
-    db1_num = eval_numerical_gradient_array(lambda b: meta_forward(x_a, x_b, label, rep_param(params, 'b1', b)), b1, dout)
-    dW2_num = eval_numerical_gradient_array(lambda w: meta_forward(x_a, x_b, label, rep_param(params, 'W2', w)), W2, dout)
-    db2_num = eval_numerical_gradient_array(lambda b: meta_forward(x_a, x_b, label, rep_param(params, 'b2', b)), b2, dout)
+    dW1_num = eval_numerical_gradient_array(lambda w: meta_forward(x_a, x_b, label, rep_param(params, 'W1', w)), W1, dout, h=1e-9)
+    db1_num = eval_numerical_gradient_array(lambda b: meta_forward(x_a, x_b, label, rep_param(params, 'b1', b)), b1, dout, h=1e-9)
+    dW2_num = eval_numerical_gradient_array(lambda w: meta_forward(x_a, x_b, label, rep_param(params, 'W2', w)), W2, dout, h=1e-9)
+    db2_num = eval_numerical_gradient_array(lambda b: meta_forward(x_a, x_b, label, rep_param(params, 'b2', b)), b2, dout, h=1e-9)
 
     out, cache = meta_forward(x_a, x_b, label, params, cache=True)
     meta_backward(dout, params, cache, grads)
+
+    print(dW1_num.reshape(20,2))
+    print()
+    print(grads['W1'].reshape(20,2))
+    #print()
+    #print(dW2_num.reshape(20,2) - grads['W2'].reshape(20,2))
+    print()
+    print(db2_num, grads['b2'])
+
 
     # The error should be around 1e-10
     print()

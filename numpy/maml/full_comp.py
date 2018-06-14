@@ -7,11 +7,12 @@
 # NOTE: first pass is a, second pass is b
 
 # NOTES: how to debug the grad? Just go through line-by-line 
-# + line-by-line
+# v line-by-line
 # - chop off some of the net so it's a bit more manageable
-# - what about anything tricky with the dW's that already exist from the forward pass
+# v what about anything tricky with the dW's that already exist from the forward pass
 # - something wrong with the testing code
 # - any variables being modified that are screwing things up
+# - compate to tensorflow output of same ops
 
 import copy
 import numpy as np
@@ -77,9 +78,9 @@ def meta_backward(dout_b, params, cache, grads=None):
 
     # deriv w.r.t b (lower half)
     # d 1st layer
-    drelu1_b = dout_b.dot(W2_prime.T)
     dW2_prime = relu1_b.T.dot(dout_b)
     db2_prime = np.sum(dout_b, axis=0)
+    drelu1_b = dout_b.dot(W2_prime.T)
 
     daffine1_b = np.where(affine1_b > 0, drelu1_b, 0)
     # d 2nd layer
@@ -104,11 +105,16 @@ def meta_backward(dout_b, params, cache, grads=None):
     ddout_a += ddb2
     drelu1_a = dout_a.dot(ddW2.T) # shortcut back because of the grad dependency
 
-    # this gradient actually gets killed because the 2nd deriv of relu is 0 everywhere
-    #ddafine1_a = x_a.dot(ddW1.T) # TODO: check why this was wrong shape
-    #ddafine1_a += ddb1
+    ddaffine1_a = x_a.dot(ddW1) 
+    ddaffine1_a += ddb1
+    ddrelu1_a = np.where(affine1_a > 0, ddaffine1_a, 0)
+
+    dW2 += ddrelu1_a.T.dot(dout_a)
+
+    ddout_a += ddrelu1_a.dot(W2)
 
     dpred_a = ddout_a * 2 # = dout_a
+
     dW2 += relu1_a.T.dot(dpred_a)
     db2 += np.sum(dpred_a, axis=0)
 
@@ -130,7 +136,7 @@ if __name__ == '__main__':
     # Test the network gradient 
     grads = GradDict()
 
-    np.random.seed(233)
+    np.random.seed(231)
     x_a = np.random.randn(15, 1)
     x_b = np.random.randn(15, 1)
     label = np.random.randn(15, 1)
@@ -152,10 +158,10 @@ if __name__ == '__main__':
         clean_params[name] = val
         return clean_params
 
-    dW1_num = eval_numerical_gradient_array(lambda w: meta_forward(x_a, x_b, label, rep_param(params, 'W1', w)), W1, dout, h=1e-9)
-    db1_num = eval_numerical_gradient_array(lambda b: meta_forward(x_a, x_b, label, rep_param(params, 'b1', b)), b1, dout, h=1e-9)
-    dW2_num = eval_numerical_gradient_array(lambda w: meta_forward(x_a, x_b, label, rep_param(params, 'W2', w)), W2, dout, h=1e-9)
-    db2_num = eval_numerical_gradient_array(lambda b: meta_forward(x_a, x_b, label, rep_param(params, 'b2', b)), b2, dout, h=1e-9)
+    dW1_num = eval_numerical_gradient_array(lambda w: meta_forward(x_a, x_b, label, rep_param(params, 'W1', w)), W1, dout)
+    db1_num = eval_numerical_gradient_array(lambda b: meta_forward(x_a, x_b, label, rep_param(params, 'b1', b)), b1, dout)
+    dW2_num = eval_numerical_gradient_array(lambda w: meta_forward(x_a, x_b, label, rep_param(params, 'W2', w)), W2, dout)
+    db2_num = eval_numerical_gradient_array(lambda b: meta_forward(x_a, x_b, label, rep_param(params, 'b2', b)), b2, dout)
 
     out, cache = meta_forward(x_a, x_b, label, params, cache=True)
     meta_backward(dout, params, cache, grads)

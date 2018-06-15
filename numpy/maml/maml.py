@@ -13,40 +13,12 @@ from utils.gradient_check import eval_numerical_gradient, eval_numerical_gradien
 
 from data_generator import DataGenerator
 
+# TODO: probably add some plotting or something that shows that it actually 
+# works, rather than just the loss. Basically add a test. 
 
-"""
-TODO:
-- maybe implement batch norm (hopefully the method does not require it to work
-
-Notes:
-
-probably want to use extra dicts instead of prefixed weights
-
-where do I need to compute 2nd derivatives?
-...
-I can use tf.hessians() to figure out how to do Hessians
+# TODO: how would I adapt this to be able to take more than one gradient step 
 
 
-
-alright, so we need to compute the gradient w.r.t the loss ()
-
-
-Maybe start with the standard network update.  Alright, I am going
-to start it slow, and just do the inner step right now.  I am going
-to try to pull things out as much as possible.
-
-And then after that, think about what I need to compute to get the 2nd
-deriv
-
-may want to build a separate class for optimization
-
-
-alright, now that i've got the backward pass,
-
-I should set up the sinusoid toy problem to test the method
-
-
-"""
 
 class AdamOptimizer():
     def __init__(self, params, learning_rate=1e-3):

@@ -1,0 +1,4 @@
+numpy
+baselines
+gym
+tensorflow

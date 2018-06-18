@@ -54,13 +54,16 @@ class Model(object):
             params = tf.trainable_variables()
         grads = tf.gradients(loss, params)
         if max_grad_norm is not None:
-            grads, _grad_norm = tf.clip_by_global_norm(grads, max_grad_norm) # clip by global norm is right way to do gradient clipping
-        grads = list(zip(grads, params))
-        trainer = tf.train.AdamOptimizer(learning_rate=LR, epsilon=1e-5)
-        _train = trainer.apply_gradients(grads)
+            grads, _grad_norm = tf.clip_by_global_norm(grads, max_grad_norm) 
 
-        def train(lr, cliprange, obs, returns, masks, actions, oldvalues, oldneglogpacs, states=None):
-            """Feed in scalar or numpy values to feed into training graph. Not sure what masks are"""
+        grads = list(zip(grads, params))
+        inner_trainer = tf.train.GradientDescentOptimizer(learning_rate=0.01)
+        meta_trainer = tf.train.AdamOptimizer(learning_rate=LR, epsilon=1e-5)
+        _inner_train = inner_trainer.apply_gradients(grads)
+        _meta_trainer = meta_trainer
+
+        def inner_train(lr, cliprange, obs, returns, masks, actions, oldvalues, oldneglogpacs, states=None):
+            """Feed in scalar or numpy values to feed into training graph. (not sure what masks are)"""
             advs = returns - oldvalues # compute advantage
             advs = (advs - advs.mean()) / (advs.std() + 1e-8) # normalize the advantages
             td_map = {train_model.X:obs, A:actions, ADV:advs, R:returns, LR:lr, 
@@ -68,10 +71,11 @@ class Model(object):
             if states is not None:
                 td_map[train_model.S] = states
                 td_map[train_model.M] = masks
-            return sess.run(
-                [pg_loss, vf_loss, entropy, approxkl, clipfrac, _train],
-                td_map
-            )[:-1]
+            
+            loss_vals = sess.run([pg_loss, vf_loss, entropy, approxkl, clipfrac, _train], td_map)[:-1]
+            return loss_vals
+
+
         # components of loss, and some diagnostics
         self.loss_names = ['policy_loss', 'value_loss', 'policy_entropy', 'approxkl', 'clipfrac']
 
@@ -88,7 +92,7 @@ class Model(object):
                 restores.append(p.assign(loaded_p))
             sess.run(restores)
 
-        self.train = train
+        self.inner_train = inner_train
         self.train_model = train_model
         self.act_model = act_model
         self.step = act_model.step # sample from the policy (feed in obs)
@@ -171,7 +175,7 @@ def constfn(val):
         return val
     return f
 
-def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr, 
+def meta_learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr, 
             vf_coef=0.5,  max_grad_norm=0.5, gamma=0.99, lam=0.95, 
             log_interval=10, render_interval=100, nminibatches=4, noptepochs=4, cliprange=0.2,
             save_interval=0, loadpath=None):
@@ -235,30 +239,15 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
         obs, returns, masks, actions, values, neglogpacs, states, epinfos = runner.run(render=render) #pylint: disable=E0632
         epinfobuf.extend(epinfos)
         mblossvals = []
-        if states is None: # nonrecurrent version
-            inds = np.arange(nbatch)
-            for _ in range(noptepochs):
-                np.random.shuffle(inds)
-                for start in range(0, nbatch, nbatch_train):
-                    end = start + nbatch_train
-                    mbinds = inds[start:end]
-                    slices = (arr[mbinds] for arr in (obs, returns, masks, actions, values, neglogpacs))
-                    mblossvals.append(model.train(lrnow, cliprangenow, *slices))  # run training op and collect loss + diagnostics
-        else: # recurrent version
-            assert nenvs % nminibatches == 0
-            envsperbatch = nenvs // nminibatches
-            envinds = np.arange(nenvs)
-            flatinds = np.arange(nenvs * nsteps).reshape(nenvs, nsteps)
-            envsperbatch = nbatch_train // nsteps
-            for _ in range(noptepochs):
-                np.random.shuffle(envinds)
-                for start in range(0, nenvs, envsperbatch):
-                    end = start + envsperbatch
-                    mbenvinds = envinds[start:end]
-                    mbflatinds = flatinds[mbenvinds].ravel()
-                    slices = (arr[mbflatinds] for arr in (obs, returns, masks, actions, values, neglogpacs))
-                    mbstates = states[mbenvinds]
-                    mblossvals.append(model.train(lrnow, cliprangenow, *slices, mbstates))            
+
+        inds = np.arange(nbatch)
+        for _ in range(noptepochs):
+            np.random.shuffle(inds)
+            for start in range(0, nbatch, nbatch_train):
+                end = start + nbatch_train
+                mbinds = inds[start:end]
+                slices = (arr[mbinds] for arr in (obs, returns, masks, actions, values, neglogpacs))
+                mblossvals.append(model.train(lrnow, cliprangenow, *slices))  # run training op and collect loss + diagnostics
 
         lossvals = np.mean(mblossvals, axis=0)
         tnow = time.time()

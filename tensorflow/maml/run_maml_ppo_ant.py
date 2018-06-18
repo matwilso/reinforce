@@ -34,7 +34,7 @@ def train(env_id, num_timesteps, seed, loadpath, render_interval):
     set_global_seeds(seed)
     policy = MlpPolicy
 
-    maml_ppo.learn(policy=policy, env=env, nsteps=2048, nminibatches=32,
+    maml_ppo.meta_learn(policy=policy, env=env, nsteps=2048, nminibatches=32,
         lam=0.95, gamma=0.99, noptepochs=10, log_interval=10, 
         render_interval=render_interval,
         save_interval=10,

@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 import os
 import time
 import joblib
@@ -10,7 +9,8 @@ from baselines import logger
 from collections import deque
 from baselines.common import explained_variance
 
-# seed: https://github.com/openai/baselines/tree/master/baselines/ppo2
+# seed for this code: https://github.com/openai/baselines/tree/master/baselines/ppo2
+# paper: https://arxiv.org/abs/1707.06347 
 
 class Model(object):
     """Object for handling all the network ops, basically losses and values and acting and training and saving"""
@@ -106,13 +106,18 @@ class Runner(object):
         nenv = env.num_envs
         self.obs = np.zeros((nenv,) + env.observation_space.shape, dtype=model.train_model.X.dtype.name)
         self.obs[:] = env.reset()
-        self.gamma = gamma # discount
-        self.lam = lam # GAE trace
+        self.gamma = gamma # discount factor
+        self.lam = lam # GAE parameter used for exponential weighting of combination of n-step returns
         self.nsteps = nsteps
         self.states = model.initial_state
         self.dones = [False for _ in range(nenv)]
 
     def run(self, render=False):
+        """Run the policy in env for the set number of steps to collect a trajectory
+
+        Returns: obs, returns, masks, actions, values, neglogpacs, states, epinfos
+        """
+        # mb = mini-batch
         mb_obs, mb_rewards, mb_actions, mb_values, mb_dones, mb_neglogpacs = [],[],[],[],[],[]
         mb_states = self.states
         epinfos = []
@@ -155,7 +160,7 @@ class Runner(object):
         mb_returns = mb_advs + mb_values
         return (*map(sf01, (mb_obs, mb_returns, mb_dones, mb_actions, mb_values, mb_neglogpacs)), 
             mb_states, epinfos)
-# obs, returns, masks, actions, values, neglogpacs, states = runner.run()
+
 def sf01(arr):
     """swap and then flatten axes 0 and 1"""
     s = arr.shape
@@ -169,8 +174,27 @@ def constfn(val):
 def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr, 
             vf_coef=0.5,  max_grad_norm=0.5, gamma=0.99, lam=0.95, 
             log_interval=10, render_interval=100, nminibatches=4, noptepochs=4, cliprange=0.2,
-            save_interval=0, loadpath=False):
+            save_interval=0, loadpath=None):
+    """
+    Run training algo for the policy
 
+    policy: policy with step (obs -> act) and value (obs -> v)
+    env: (wrapped) OpenAI Gym env
+    nsteps: T horizon in PPO paper
+    total_timesteps: number of env time steps to take in all
+    ent_coef: coefficient for how much to weight entropy in loss
+    lr: learning rate. function or float.  function will be passed in progress fraction (t/T) for time adaptive. float will be const
+    vf_coef: coefficient for how much to weight value in loss
+    max_grad_norm: value for determining how much to clip gradients
+    gamma: discount factor
+    lam: GAE lambda value (dropoff level for weighting combined n-step rewards. 0 is just 1-step TD estimate. 1 is like value baselined MC)
+    nminibathces:  how many mini-batches to split data into (will divide values parameterized by nsteps)
+    noptepochs:  how many optimization epochs to run. K in the PPO paper
+    cliprange: epsilon in the paper. function or float. see lr for description
+    """
+
+    # These allow for time-step adaptive learning rates, where pass in a function that takes in t,
+    # but they default to constant functions if you pass in a float
     if isinstance(lr, float): lr = constfn(lr)
     else: assert callable(lr)
     if isinstance(cliprange, float): cliprange = constfn(cliprange)
@@ -180,18 +204,18 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
     nenvs = env.num_envs
     ob_space = env.observation_space
     ac_space = env.action_space
-    nbatch = nenvs * nsteps
-    nbatch_train = nbatch // nminibatches
+    nbatch = nenvs * nsteps # number in the batch
+    nbatch_train = nbatch // nminibatches # number in the minibatch for training
 
     make_model = lambda : Model(policy=policy, ob_space=ob_space, ac_space=ac_space, nbatch_act=nenvs, nbatch_train=nbatch_train, 
                     nsteps=nsteps, ent_coef=ent_coef, vf_coef=vf_coef,
                     max_grad_norm=max_grad_norm)
     if save_interval and logger.get_dir():
-        import cloudpickle
+        import cloudpickle # cloud pickle, because writing a lamdba function (so we can call it later)
         with open(osp.join(logger.get_dir(), 'make_model.pkl'), 'wb') as fh:
             fh.write(cloudpickle.dumps(make_model))
     model = make_model()
-    if loadpath:
+    if loadpath is not None:
         model.load(loadpath)
     runner = Runner(env=env, model=model, nsteps=nsteps, gamma=gamma, lam=lam)
 
@@ -203,22 +227,22 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
         assert nbatch % nminibatches == 0
         nbatch_train = nbatch // nminibatches
         tstart = time.time()
-        frac = 1.0 - (update - 1.0) / nupdates
+        frac = 1.0 - (update - 1.0) / nupdates # fraction of num of current update over num total updates
         lrnow = lr(frac)
         cliprangenow = cliprange(frac)
         render = render_interval and update % render_interval == 0
+        # collect a trajectory of length nsteps
         obs, returns, masks, actions, values, neglogpacs, states, epinfos = runner.run(render=render) #pylint: disable=E0632
         epinfobuf.extend(epinfos)
         mblossvals = []
         if states is None: # nonrecurrent version
-            inds = np.arange(nbatch)
-            for _ in range(noptepochs):
+            inds = np.arange(nbatch) for _ in range(noptepochs):
                 np.random.shuffle(inds)
                 for start in range(0, nbatch, nbatch_train):
                     end = start + nbatch_train
                     mbinds = inds[start:end]
                     slices = (arr[mbinds] for arr in (obs, returns, masks, actions, values, neglogpacs))
-                    mblossvals.append(model.train(lrnow, cliprangenow, *slices))
+                    mblossvals.append(model.train(lrnow, cliprangenow, *slices))  # run training op and collect loss + diagnostics
         else: # recurrent version
             assert nenvs % nminibatches == 0
             envsperbatch = nenvs // nminibatches
@@ -261,15 +285,3 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
 
 def safemean(xs):
     return np.nan if len(xs) == 0 else np.mean(xs)
-
-
-
-
-
-
-
-
-
-if __name__ == '__main__':
-    pass
-

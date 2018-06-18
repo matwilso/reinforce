@@ -94,7 +94,6 @@ class LstmPolicy(object):
         self.value = value
 
 class CnnPolicy(object):
-
     def __init__(self, sess, ob_space, ac_space, nbatch, nsteps, reuse=False): #pylint: disable=W0613
         nh, nw, nc = ob_space.shape
         ob_shape = (nbatch, nh, nw, nc)
@@ -130,11 +129,16 @@ class CnnPolicy(object):
         self.value = value
 
 class MlpPolicy(object):
+    """Multi-layer perceptron policy. Policy and Value networks are separated"""
     def __init__(self, sess, ob_space, ac_space, nbatch, nsteps, reuse=False): #pylint: disable=W0613
-        """sess, ob_space, ac_space, nbatch = number of """
+        """ 
+        nbatch : number of samples in a batch
+        nsteps : only for RNNs
+        """
         ob_shape = (nbatch,) + ob_space.shape
         actdim = ac_space.shape[0]
         X = tf.placeholder(tf.float32, ob_shape, name='Ob') #obs
+        # NN definition. policy and value networks are separated
         with tf.variable_scope("model", reuse=reuse):
             h1 = fc(X, 'pi_fc1', nh=64, init_scale=np.sqrt(2), act=tf.tanh)
             h2 = fc(h1, 'pi_fc2', nh=64, init_scale=np.sqrt(2), act=tf.tanh)
@@ -145,20 +149,22 @@ class MlpPolicy(object):
             logstd = tf.get_variable(name="logstd", shape=[1, actdim], 
                 initializer=tf.zeros_initializer())
 
+        # Create the right probability distribution type depending on the action space (discrete = Categorical, continuous = DiagGaussian)
         pdparam = tf.concat([pi, pi * 0.0 + logstd], axis=1)
-
         self.pdtype = make_pdtype(ac_space)
         self.pd = self.pdtype.pdfromflat(pdparam)
 
-        a0 = self.pd.sample()
-        neglogp0 = self.pd.neglogp(a0)
-        self.initial_state = None
+        a0 = self.pd.sample() # op for sampling from the distribution
+        neglogp0 = self.pd.neglogp(a0) # neglogprob of that action (for gradient)
+        self.initial_state = None # just for RNNs
 
         def step(ob, *_args, **_kwargs):
+            """Feed the observation through network to get action, value, and neglogprob"""
             a, v, neglogp = sess.run([a0, vf, neglogp0], {X:ob})
             return a, v, self.initial_state, neglogp
 
         def value(ob, *_args, **_kwargs):
+            """Feed the observation through to get the value"""
             return sess.run(vf, {X:ob})
 
         self.X = X

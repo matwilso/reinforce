@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 import argparse
 from baselines import bench, logger
+from envs.ant_env_rand_direc import AntEnvRandDirec
+from gym.wrappers.time_limit import TimeLimit
 
 def train(env_id, num_timesteps, seed, loadpath, render_interval):
     from baselines.common import set_global_seeds
@@ -19,7 +21,14 @@ def train(env_id, num_timesteps, seed, loadpath, render_interval):
         env = gym.make(env_id)
         env = bench.Monitor(env, logger.get_dir())
         return env
-    env = DummyVecEnv([make_env])
+
+    def custom_env():
+        env = AntEnvRandDirec(goal_vel=1.0)
+        env = TimeLimit(env, max_episode_steps=1000)
+        env = bench.Monitor(env, logger.get_dir())
+        return env
+
+    env = DummyVecEnv([custom_env])
     env = VecNormalize(env)
 
     set_global_seeds(seed)

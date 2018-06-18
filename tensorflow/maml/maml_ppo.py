@@ -236,7 +236,8 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
         epinfobuf.extend(epinfos)
         mblossvals = []
         if states is None: # nonrecurrent version
-            inds = np.arange(nbatch) for _ in range(noptepochs):
+            inds = np.arange(nbatch)
+            for _ in range(noptepochs):
                 np.random.shuffle(inds)
                 for start in range(0, nbatch, nbatch_train):
                     end = start + nbatch_train

@@ -62,6 +62,7 @@ class Model(object):
         _inner_train = inner_trainer.apply_gradients(grads)
         _meta_trainer = meta_trainer
 
+
         def inner_train(lr, cliprange, obs, returns, masks, actions, oldvalues, oldneglogpacs, states=None):
             """Feed in scalar or numpy values to feed into training graph. (not sure what masks are)"""
             advs = returns - oldvalues # compute advantage
@@ -74,6 +75,22 @@ class Model(object):
             
             loss_vals = sess.run([pg_loss, vf_loss, entropy, approxkl, clipfrac, _train], td_map)[:-1]
             return loss_vals
+
+             # probably want to tf-ify this
+.            for _ in range(noptepochs):
+                np.random.shuffle(inds)
+                for start in range(0, nbatch, nbatch_train):
+                    end = start + nbatch_train
+                    mbinds = inds[start:end]
+                    slices = (arr[mbinds] for arr in (obs, returns, masks, actions, values, neglogpacs))
+                    mblossvals.append(model.train(lrnow, cliprangenow, *slices))
+
+
+        self.sync_op = tf.identity
+        def sync()
+
+
+        self.sync = lambda x:
 
 
         # components of loss, and some diagnostics
@@ -91,6 +108,8 @@ class Model(object):
             for p, loaded_p in zip(params, loaded_params):
                 restores.append(p.assign(loaded_p))
             sess.run(restores)
+
+
 
         self.inner_train = inner_train
         self.train_model = train_model

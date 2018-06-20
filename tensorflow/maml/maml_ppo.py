@@ -15,7 +15,6 @@ from baselines.common.runners import AbstractEnvRunner
 
 class Model(object):
     """Object for handling all the network ops, basically losses and values and acting and training and saving"""
-
     def loss_op(self, ):
         neglogpac = train_model.pd.neglogp(A)
         entropy = tf.reduce_mean(train_model.pd.entropy())
@@ -38,16 +37,67 @@ class Model(object):
         loss = pg_loss - entropy * ent_coef + vf_loss * vf_coef
         return loss
 
+    def forward(self, sess, ob_space, ac_space, nbatch, pi_weights, vf_weights, reuse=False):
+        # POLICY STUFF
+        # Create the right probability distribution type depending on the action space (discrete = Categorical, continuous = DiagGaussian)
+        self.pdtype = make_pdtype(ac_space)
+        #ob_shape = (nbatch,) + ob_space.shape
+        actdim = ac_space.shape[0]
+        processed_x = self.train_processed_x if nbatch == self.nbatch_train else self.samp_processed_x
+        # NN definition. policy and value networks are separated
+        with tf.variable_scope(scope, reuse=reuse):
+            with tf.variable_scope("pi", reuse=reuse):
+                pi = forward_fc(processed_x, pi_weights, dim_hidden=self.dim_hidden, reuse=reuse)
+            with tf.variable_scope("vf", reuse=reuse):
+                vf = forward_fc(processed_x, vf_weights, dim_hidden=self.dim_hidden, reuse=reuse)
+            logstd = tf.get_variable(name="logstd", shape=[1, actdim], initializer=tf.zeros_initializer())
 
-    def __init__(self, *, policy, ob_space, ac_space, nbatch_act, nbatch_train,
-                nsteps, ent_coef, vf_coef, max_grad_norm, scope='model', seed=42):
-        sess = tf.get_default_session()
-        # model used to draw samples from (nbatch_act is parameterized in case you want to act in multiple envs)
-        act_model = policy(sess, ob_space, ac_space, nbatch_act, 1, scope=scope, reuse=False)
-        # model used for training the network.  (nbatch_train is the size of minibatch). these share params
-        train_model = policy(sess, ob_space, ac_space, nbatch_train, nsteps, scope=scope, reuse=True)
+            # Create the right probability distribution type depending on the action space (discrete = Categorical, continuous = DiagGaussian)
+            self.pdtype = make_pdtype(ac_space)
+            pdparam = tf.concat([pi, pi * 0.0 + logstd], axis=1)
+            self.pd = self.pdtype.pdfromflat(pdparam)
 
-        A = train_model.pdtype.sample_placeholder([None]) # placeholder for sampled action
+            a0 = self.pd.sample() # op for sampling from the distribution
+            neglogp0 = self.pd.neglogp(a0) # neglogprob of that action (for gradient)
+            self.initial_state = None # just for RNNs
+
+        return a0, vf, neglogp0
+
+    def __init__(self, policy, ob_space, ac_space, nbatch_act, nbatch_train,
+                ent_coef, vf_coef, max_grad_norm, scope='model', seed=42):
+        self.sess = tf.get_default_session()
+        self.scope = scope
+        self.nbatch_act = nbatch_act
+        self.nbatch_train = nbatch_train
+        self.dim_hidden = [100, 100]
+
+        with tf.variable_scope(scope, reuse=reuse):
+            self.samp_X, self.samp_processed_x = observation_input(ob_space, nbatch_act)
+            self.train_X, self.train_processed_x = observation_input(ob_space, nbatch_train)
+            with tf.variable_scope("pi", reuse=reuse):
+                self.pi_weights = pi_weights = construct_fc_weights(dim_input=self.processed_x.get_shape(), dim_hidden=self.dim_hidden, dim_output=actdim)
+            with tf.variable_scope("vf", reuse=reuse):
+                self.vf_weights = vf_weights = construct_fc_weights(dim_input=self.processed_x.get_shape(), dim_hidden=self.dim_hidden, dim_output=1)
+
+        samp_a, samp_v, samp_neglogp = self.forward(ob_space, ac_space, nbatch_act, scope=scope, reuse=False)
+        train_a, train_v, train_neglogp = self.forward(ob_space, ac_space, nbatch_train, scope=scope, reuse=True)
+        def step(ob):
+            """Feed the observation through network to get action, value, and neglogprob"""
+            a, v, neglogp = sess.run([samp_a, samp_v, samp_neglogp], {self.samp_X:ob})
+            return a, v, self.initial_state, neglogp
+
+        def value(ob, *_args, **_kwargs):
+            """Feed the observation through to get the value"""
+            return sess.run(samp_v, {self.samp_X:ob})
+
+
+        # TODO: it seems like I am going to need to have two sets of all these feed values.  one for 
+        # the inner and one for the outer....
+
+
+
+
+        A = make.pdtype.sample_placeholder([None]) # placeholder for sampled action
         ADV = tf.placeholder(tf.float32, [None], 'ADV') # Advantage function
         R = tf.placeholder(tf.float32, [None], 'R') # Actual returns 
         OLDNEGLOGPAC = tf.placeholder(tf.float32, [None], 'OLDNEGLOGPAC') # Old policy negative log probability (used for prob ratio calc)
@@ -247,7 +297,7 @@ def meta_learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
     ob_space = env.observation_space
     ac_space = env.action_space
     nbatch = nenvs * nsteps # number in the batch
-    nbatch_train = nbatch // nminibatches # number in the minibatch for training
+    nbatch_train = nbatch // :minibatches # number in the minibatch for training
 
     make_slow_model = lambda : Model(policy=policy, ob_space=ob_space, ac_space=ac_space, nbatch_act=nenvs, nbatch_train=nbatch_train, 
                     nsteps=nsteps, ent_coef=ent_coef, vf_coef=vf_coef,

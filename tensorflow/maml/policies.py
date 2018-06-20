@@ -5,6 +5,28 @@ from baselines.a2c.utils import conv, fc, conv_to_fc, batch_to_seq, seq_to_batch
 from baselines.common.distributions import make_pdtype
 from baselines.common.input import observation_input
 
+### Network construction functions (fc networks and conv networks)
+def construct_fc_weights(self):
+    weights = {}
+    weights['w1'] = tf.Variable(tf.truncated_normal([self.dim_input, self.dim_hidden[0]], stddev=0.01))
+    weights['b1'] = tf.Variable(tf.zeros([self.dim_hidden[0]]))
+    for i in range(1,len(self.dim_hidden)):
+        weights['w'+str(i+1)] = tf.Variable(tf.truncated_normal([self.dim_hidden[i-1], self.dim_hidden[i]], stddev=0.01))
+        weights['b'+str(i+1)] = tf.Variable(tf.zeros([self.dim_hidden[i]]))
+    weights['w'+str(len(self.dim_hidden)+1)] = tf.Variable(tf.truncated_normal([self.dim_hidden[-1], self.dim_output], stddev=0.01))
+    weights['b'+str(len(self.dim_hidden)+1)] = tf.Variable(tf.zeros([self.dim_output]))
+    return weights
+
+def forward_fc(self, inp, weights, reuse=False):
+    hidden = normalize(tf.matmul(inp, weights['w1']) + weights['b1'], activation=tf.nn.relu, reuse=reuse, scope='0')
+    for i in range(1,len(self.dim_hidden)):
+        hidden = normalize(tf.matmul(hidden, weights['w'+str(i+1)]) + weights['b'+str(i+1)], activation=tf.nn.relu, reuse=reuse, scope=str(i+1))
+    return tf.matmul(hidden, weights['w'+str(len(self.dim_hidden)+1)]) + weights['b'+str(len(self.dim_hidden)+1)]
+
+
+# TODO: do I want to use batchnorm?
+
+
 class MAMLPolicy(object):
     """MAML policy"""
     def __init__(self, sess, ob_space, ac_space, nbatch, nsteps, scope='model', reuse=False): #pylint: disable=W0613

@@ -17,6 +17,8 @@ class Model(object):
     """Object for handling all the network ops, basically losses and values and acting and training and saving"""
 
     def loss_op(self, ):
+        neglogpac = train_model.pd.neglogp(A)
+        entropy = tf.reduce_mean(train_model.pd.entropy())
         # value prediction
         # do the clipping to prevent too much change/instability in the value function
         vpred = train_model.vf
@@ -62,8 +64,15 @@ class Model(object):
         traj_iterator = traj_dataset.make_initializable_iterator()
         MB_OBS, MB_R, MB_A, MB_OLDVPRED, MB_OLDNEGLOGPAC = traj_iterator.get_next()
 
-        neglogpac = train_model.pd.neglogp(A)
-        entropy = tf.reduce_mean(train_model.pd.entropy())
+        inner_loss = self.loss_op(MB_OBS, MB_R, MB_A, MB_OLDVPRED, MB_OLDNEGLOGPAC) # run 1-minibatch
+
+
+        # TODO: how am I going to do fast weights inside here?  I think I am going to need to be able to choose which
+        # weights I use to compute the forward pass. Yeah, because you can update the gradients with the gradient
+        # descent step and assign them to a new variable, but you can't reuse them in a forward pass, because those
+        # use the original weights. This will require modifying the policy. 
+        # ... this might be really computationally expensive if a lot of ops get cached
+
 
         self.params = params = tf.trainable_variables(scope)
 

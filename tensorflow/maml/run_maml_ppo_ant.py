@@ -4,11 +4,11 @@ from baselines import bench, logger
 from envs.ant_env_rand_direc import AntEnvRandDirec
 from gym.wrappers.time_limit import TimeLimit
 
-def train(env_id, num_timesteps, seed, loadpath, render_interval):
+def train(env_id, num_timesteps, seed, load_path, render):
     from baselines.common import set_global_seeds
     from baselines.common.vec_env.vec_normalize import VecNormalize
     import maml_ppo
-    from policies import MlpPolicy
+    from policies import MAMLPolicy
     import gym
     import tensorflow as tf
     from baselines.common.vec_env.dummy_vec_env import DummyVecEnv
@@ -32,17 +32,17 @@ def train(env_id, num_timesteps, seed, loadpath, render_interval):
     env = VecNormalize(env)
 
     set_global_seeds(seed)
-    policy = MlpPolicy
+    policy = MAMLPolicy
 
     maml_ppo.meta_learn(policy=policy, env=env, nsteps=2048, nminibatches=32,
         lam=0.95, gamma=0.99, noptepochs=10, log_interval=10, 
-        render_interval=render_interval,
+        render=render,
         save_interval=10,
         ent_coef=0.0,
         lr=3e-4,
         cliprange=0.2,
         total_timesteps=num_timesteps,
-        loadpath=loadpath)
+        load_path=load_path)
 
 
 def main():
@@ -50,11 +50,11 @@ def main():
     parser.add_argument('--env', help='environment ID', default='Ant-v2')
     parser.add_argument('--seed', help='RNG seed', type=int, default=0)
     parser.add_argument('--num-timesteps', type=int, default=int(1e6))
-    parser.add_argument('--loadpath', type=str, default=None)
-    parser.add_argument('--render-interval', type=int, default=0)
+    parser.add_argument('--load_path', type=str, default=None)
+    parser.add_argument('--render', type=int, default=0)
     args = parser.parse_args()
     logger.configure()
-    train(args.env, num_timesteps=args.num_timesteps, seed=args.seed, loadpath=args.loadpath, render_interval=args.render_interval)
+    train(args.env, num_timesteps=args.num_timesteps, seed=args.seed, load_path=args.load_path, render=args.render)
 
 
 if __name__ == '__main__':

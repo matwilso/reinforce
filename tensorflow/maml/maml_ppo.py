@@ -8,35 +8,19 @@ import baselines
 from baselines import logger
 from collections import deque
 from baselines.common import explained_variance
+from baselines.common.runners import AbstractEnvRunner
 
 # seed for this code: https://github.com/openai/baselines/tree/master/baselines/ppo2
 # paper: https://arxiv.org/abs/1707.06347 
 
 class Model(object):
     """Object for handling all the network ops, basically losses and values and acting and training and saving"""
-    def __init__(self, *, policy, ob_space, ac_space, nbatch_act, nbatch_train,
-                nsteps, ent_coef, vf_coef, max_grad_norm):
-        sess = tf.get_default_session()
-        # model used to draw samples from (nbatch_act is parameterized in case you want to act in multiple envs)
-        act_model = policy(sess, ob_space, ac_space, nbatch_act, 1, reuse=False)
-        # model used for training the network.  (nbatch_train is the size of minibatch). these share params
-        train_model = policy(sess, ob_space, ac_space, nbatch_train, nsteps, reuse=True)
 
-        A = train_model.pdtype.sample_placeholder([None]) # placeholder for sampled action
-        ADV = tf.placeholder(tf.float32, [None]) # Advantage function
-        R = tf.placeholder(tf.float32, [None]) # Actual returns 
-        OLDNEGLOGPAC = tf.placeholder(tf.float32, [None]) # Old policy negative log probability (used for prob ratio calc)
-        OLDVPRED = tf.placeholder(tf.float32, [None]) # Old state-value pred
-        LR = tf.placeholder(tf.float32, [])
-        CLIPRANGE = tf.placeholder(tf.float32, [])
-
-        neglogpac = train_model.pd.neglogp(A)
-        entropy = tf.reduce_mean(train_model.pd.entropy())
-
+    def loss_op(self, ):
         # value prediction
         # do the clipping to prevent too much change/instability in the value function
         vpred = train_model.vf
-        vpredclipped = OLDVPRED + tf.clip_by_value(train_model.vf - OLDVPRED, - CLIPRANGE, CLIPRANGE)
+        vpredclipped = MB_OLDVPRED + tf.clip_by_value(train_model.vf - MB_OLDVPRED, - CLIPRANGE, CLIPRANGE)
         vf_losses1 = tf.square(vpred - R)
         vf_losses2 = tf.square(vpredclipped - R) 
         vf_loss = .5 * tf.reduce_mean(tf.maximum(vf_losses1, vf_losses2)) # times 0.5 because MSE loss
@@ -50,48 +34,62 @@ class Model(object):
         clipfrac = tf.reduce_mean(tf.to_float(tf.greater(tf.abs(ratio - 1.0), CLIPRANGE))) # diagnostic: fraction of values that were clipped
         # total loss = action loss, entropy bonus, and value loss
         loss = pg_loss - entropy * ent_coef + vf_loss * vf_coef
-        with tf.variable_scope('model'):
-            params = tf.trainable_variables()
+        return loss
+
+
+    def __init__(self, *, policy, ob_space, ac_space, nbatch_act, nbatch_train,
+                nsteps, ent_coef, vf_coef, max_grad_norm, scope='model', seed=42):
+        sess = tf.get_default_session()
+        # model used to draw samples from (nbatch_act is parameterized in case you want to act in multiple envs)
+        act_model = policy(sess, ob_space, ac_space, nbatch_act, 1, scope=scope, reuse=False)
+        # model used for training the network.  (nbatch_train is the size of minibatch). these share params
+        train_model = policy(sess, ob_space, ac_space, nbatch_train, nsteps, scope=scope, reuse=True)
+
+        A = train_model.pdtype.sample_placeholder([None]) # placeholder for sampled action
+        ADV = tf.placeholder(tf.float32, [None], 'ADV') # Advantage function
+        R = tf.placeholder(tf.float32, [None], 'R') # Actual returns 
+        OLDNEGLOGPAC = tf.placeholder(tf.float32, [None], 'OLDNEGLOGPAC') # Old policy negative log probability (used for prob ratio calc)
+        OLDVPRED = tf.placeholder(tf.float32, [None], 'OLDVPRED') # Old state-value pred
+        LR = tf.placeholder(tf.float32, [], 'LR')
+        CLIPRANGE = tf.placeholder(tf.float32, [], 'CLIPRANGE')
+
+        # Dataset for a trajectory
+        # This batched optimization needs to happen in the tensorflow graph because it needs to happen in
+        # a single run so that ops will be cached.  Because we are optimizing over several epochs I think.
+        # with mini-batches I think.
+        traj_dataset = tf.data.Dataset.from_tensor_slices((train_model.X, R, A, OLDVPRED, OLDNEGLOGPAC))
+        traj_dataset = traj_dataset.shuffle(seed=seed).repeat(noptechos).batch(nminibatch) 
+        traj_iterator = traj_dataset.make_initializable_iterator()
+        MB_OBS, MB_R, MB_A, MB_OLDVPRED, MB_OLDNEGLOGPAC = traj_iterator.get_next()
+
+        neglogpac = train_model.pd.neglogp(A)
+        entropy = tf.reduce_mean(train_model.pd.entropy())
+
+        self.params = params = tf.trainable_variables(scope)
+
         grads = tf.gradients(loss, params)
         if max_grad_norm is not None:
             grads, _grad_norm = tf.clip_by_global_norm(grads, max_grad_norm) 
 
-        grads = list(zip(grads, params))
-        inner_trainer = tf.train.GradientDescentOptimizer(learning_rate=0.01)
-        meta_trainer = tf.train.AdamOptimizer(learning_rate=LR, epsilon=1e-5)
-        _inner_train = inner_trainer.apply_gradients(grads)
-        _meta_trainer = meta_trainer
+        # TRAINING STUFF
+        # TODO: dataset shuffle, need to make sure that it is repeatable
 
 
-        def inner_train(lr, cliprange, obs, returns, masks, actions, oldvalues, oldneglogpacs, states=None):
-            """Feed in scalar or numpy values to feed into training graph. (not sure what masks are)"""
-            advs = returns - oldvalues # compute advantage
-            advs = (advs - advs.mean()) / (advs.std() + 1e-8) # normalize the advantages
-            td_map = {train_model.X:obs, A:actions, ADV:advs, R:returns, LR:lr, 
-                    CLIPRANGE:cliprange, OLDNEGLOGPAC:oldneglogpacs, OLDVPRED:oldvalues}
-            if states is not None:
-                td_map[train_model.S] = states
-                td_map[train_model.M] = masks
-            
-            loss_vals = sess.run([pg_loss, vf_loss, entropy, approxkl, clipfrac, _train], td_map)[:-1]
-            return loss_vals
+        INDS = tf.placeholder(dtype=tf.int32, shape=[None], name='INDS')
+        for K in range(noptepochs):
+            shuffled_inds = tf.random_shuffle(INDS, seed=42+K) # must be deterministic to match up between models
+            tf.Print(shuffled_inds, [shuffled_inds, "SEED = {}".format(42+K)])
+            for start in range(0, nbatch, nbatch_train):
+                end = start + nbatch_train
+                mbinds = shuffled_inds[start:end] # mini-batch indices
 
-             # probably want to tf-ify this
-.            for _ in range(noptepochs):
-                np.random.shuffle(inds)
-                for start in range(0, nbatch, nbatch_train):
-                    end = start + nbatch_train
-                    mbinds = inds[start:end]
-                    slices = (arr[mbinds] for arr in (obs, returns, masks, actions, values, neglogpacs))
-                    mblossvals.append(model.train(lrnow, cliprangenow, *slices))
-
-
-        self.sync_op = tf.identity
-        def sync()
-
-
-        self.sync = lambda x:
-
+                slices = (arr[mbinds] for arr in (obs, returns, masks, actions, values, neglogpacs))
+                mblossvals.append(model.train(lrnow, cliprangenow, *slices))  # run training op and collect loss + diagnostics
+        
+        def train():
+            advs = returns - values
+            advs = (advs - advs.mean()) / (advs.std() + 1e-8)
+            sess.run()
 
         # components of loss, and some diagnostics
         self.loss_names = ['policy_loss', 'value_loss', 'policy_entropy', 'approxkl', 'clipfrac']
@@ -109,9 +107,8 @@ class Model(object):
                 restores.append(p.assign(loaded_p))
             sess.run(restores)
 
-
-
-        self.inner_train = inner_train
+        #self.inner_train = inner_train
+        self.train = train
         self.train_model = train_model
         self.act_model = act_model
         self.step = act_model.step # sample from the policy (feed in obs)
@@ -119,41 +116,53 @@ class Model(object):
         self.initial_state = act_model.initial_state  
         self.save = save
         self.load = load
-        tf.global_variables_initializer().run(session=sess) #pylint: disable=E1101
 
 class Runner(object):
     """Object to hold RL discounting/trace params and to run a rollout of the policy"""
-    def __init__(self, *, env, model, nsteps, gamma, lam):
+    def __init__(self, *, env, slow_model, fast_model, nsteps, gamma, lam, render=False):
         self.env = env
-        self.model = model
-        nenv = env.num_envs
-        self.obs = np.zeros((nenv,) + env.observation_space.shape, dtype=model.train_model.X.dtype.name)
-        self.obs[:] = env.reset()
+        self.slow_model = slow_model
+        self.fast_model = fast_model
+        self.nsteps = nsteps
         self.gamma = gamma # discount factor
         self.lam = lam # GAE parameter used for exponential weighting of combination of n-step returns
-        self.nsteps = nsteps
-        self.states = model.initial_state
+        self.render = render
+        self.states = slow_model.initial_state
+        nenv = env.num_envs
+        self.obs = np.zeros((nenv,) + env.observation_space.shape, dtype=slow_model.train_model.X.dtype.name)
+        self.obs[:] = env.reset()
         self.dones = [False for _ in range(nenv)]
+        sess = tf.get_default_session()
 
-    def run(self, render=False):
+        # sync all the variables between the slow and fast models
+        sync_ops = [tf.assign(fast_weight, slow_weight) for fast_weight, slow_weight in zip(fast_model.params, slow_model.params)]
+        def sync_models():
+            sess.run(sync_ops)
+        self.sync_models = sync_models
+
+        tf.global_variables_initializer().run(session=sess) #pylint: disable=E1101
+
+    def run(self, model):
         """Run the policy in env for the set number of steps to collect a trajectory
 
         Returns: obs, returns, masks, actions, values, neglogpacs, states, epinfos
         """
+        model = self.fast_model if model == 'fast' else self.slow_model
+
         # mb = mini-batch
         mb_obs, mb_rewards, mb_actions, mb_values, mb_dones, mb_neglogpacs = [],[],[],[],[],[]
         mb_states = self.states
         epinfos = []
         # Do a rollout of one horizon (not necessarily one ep)
         for _ in range(self.nsteps):
-            actions, values, self.states, neglogpacs = self.model.step(self.obs, self.states, self.dones)
+            actions, values, self.states, neglogpacs = model.step(self.obs, self.states, self.dones)
             mb_obs.append(self.obs.copy())
             mb_actions.append(actions)
             mb_values.append(values)
             mb_neglogpacs.append(neglogpacs)
             mb_dones.append(self.dones)            
             self.obs[:], rewards, self.dones, infos = self.env.step(actions)
-            if render: 
+            if self.render: 
                 self.env.venv.envs[0].render()
             for info in infos:
                 maybeepinfo = info.get('episode')
@@ -166,7 +175,7 @@ class Runner(object):
         mb_values = np.asarray(mb_values, dtype=np.float32)
         mb_neglogpacs = np.asarray(mb_neglogpacs, dtype=np.float32)
         mb_dones = np.asarray(mb_dones, dtype=np.bool)
-        last_values = self.model.value(self.obs, self.states, self.dones)
+        last_values = model.value(self.obs, self.states, self.dones)
         # discount/bootstrap off value fn (compute advantage)
         mb_returns = np.zeros_like(mb_rewards)
         mb_advs = np.zeros_like(mb_rewards)
@@ -180,14 +189,15 @@ class Runner(object):
                 nextvalues = mb_values[t+1]
             delta = mb_rewards[t] + self.gamma * nextvalues * nextnonterminal - mb_values[t]
             mb_advs[t] = lastgaelam = delta + self.gamma * self.lam * nextnonterminal * lastgaelam
-        mb_returns = mb_advs + mb_values
+        mb_returns = mb_advs + mb_values # I don't get why they do this. Seems only for logging, since they undo it later
+
+        def sf01(arr):
+            """swap and then flatten axes 0 and 1"""
+            s = arr.shape
+            return arr.swapaxes(0, 1).reshape(s[0] * s[1], *s[2:])
+        # obs, returns, dones, actions, values, neglogpacs, states, epinfos
         return (*map(sf01, (mb_obs, mb_returns, mb_dones, mb_actions, mb_values, mb_neglogpacs)), 
             mb_states, epinfos)
-
-def sf01(arr):
-    """swap and then flatten axes 0 and 1"""
-    s = arr.shape
-    return arr.swapaxes(0, 1).reshape(s[0] * s[1], *s[2:])
 
 def constfn(val):
     def f(_):
@@ -196,8 +206,8 @@ def constfn(val):
 
 def meta_learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr, 
             vf_coef=0.5,  max_grad_norm=0.5, gamma=0.99, lam=0.95, 
-            log_interval=10, render_interval=100, nminibatches=4, noptepochs=4, cliprange=0.2,
-            save_interval=0, loadpath=None):
+            log_interval=10, render=False, nminibatches=4, noptepochs=4, cliprange=0.2,
+            save_interval=0, load_path=None):
     """
     Run training algo for the policy
 
@@ -230,17 +240,32 @@ def meta_learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
     nbatch = nenvs * nsteps # number in the batch
     nbatch_train = nbatch // nminibatches # number in the minibatch for training
 
-    make_model = lambda : Model(policy=policy, ob_space=ob_space, ac_space=ac_space, nbatch_act=nenvs, nbatch_train=nbatch_train, 
+    make_slow_model = lambda : Model(policy=policy, ob_space=ob_space, ac_space=ac_space, nbatch_act=nenvs, nbatch_train=nbatch_train, 
                     nsteps=nsteps, ent_coef=ent_coef, vf_coef=vf_coef,
-                    max_grad_norm=max_grad_norm)
+                    max_grad_norm=max_grad_norm, scope='slow_model')
+
+    make_fast_model = lambda : Model(policy=policy, ob_space=ob_space, ac_space=ac_space, nbatch_act=nenvs, nbatch_train=nbatch_train, 
+                    nsteps=nsteps, ent_coef=ent_coef, vf_coef=vf_coef,
+                    max_grad_norm=max_grad_norm, scope='fast_model')
+
     if save_interval and logger.get_dir():
         import cloudpickle # cloud pickle, because writing a lamdba function (so we can call it later)
-        with open(osp.join(logger.get_dir(), 'make_model.pkl'), 'wb') as fh:
-            fh.write(cloudpickle.dumps(make_model))
-    model = make_model()
-    if loadpath is not None:
-        model.load(loadpath)
-    runner = Runner(env=env, model=model, nsteps=nsteps, gamma=gamma, lam=lam)
+        with open(osp.join(logger.get_dir(), 'make_slow_model.pkl'), 'wb') as fh:
+            fh.write(cloudpickle.dumps(make_slow_model))
+        with open(osp.join(logger.get_dir(), 'make_fast_model.pkl'), 'wb') as fh:
+            fh.write(cloudpickle.dumps(make_fast_model))
+    
+    slow_model = make_slow_model()
+    fast_model = make_fast_model()
+    # WARNING: these datasets must be kept in sync.  they should be drawn from the same number of times
+
+    if load_path is not None:
+        model.load(load_path)
+    runner = Runner(env=env, slow_model=slow_model, fast_model=fast_model, nsteps=nsteps, gamma=gamma, lam=lam, render=render)
+    runner.sync_models()
+
+
+
 
     epinfobuf = deque(maxlen=100)
     tfirststart = time.time()
@@ -253,20 +278,10 @@ def meta_learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
         frac = 1.0 - (update - 1.0) / nupdates # fraction of num of current update over num total updates
         lrnow = lr(frac)
         cliprangenow = cliprange(frac)
-        render = render_interval and update % render_interval == 0
         # collect a trajectory of length nsteps
-        obs, returns, masks, actions, values, neglogpacs, states, epinfos = runner.run(render=render) #pylint: disable=E0632
+        obs, returns, masks, actions, values, neglogpacs, states, epinfos = runner.run(model='slow') #pylint: disable=E0632
         epinfobuf.extend(epinfos)
         mblossvals = []
-
-        inds = np.arange(nbatch)
-        for _ in range(noptepochs):
-            np.random.shuffle(inds)
-            for start in range(0, nbatch, nbatch_train):
-                end = start + nbatch_train
-                mbinds = inds[start:end]
-                slices = (arr[mbinds] for arr in (obs, returns, masks, actions, values, neglogpacs))
-                mblossvals.append(model.train(lrnow, cliprangenow, *slices))  # run training op and collect loss + diagnostics
 
         lossvals = np.mean(mblossvals, axis=0)
         tnow = time.time()

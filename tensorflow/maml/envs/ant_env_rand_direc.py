@@ -3,6 +3,7 @@ from gym import utils
 from gym.envs.mujoco import mujoco_env
 
 class AntEnvRandDirec(mujoco_env.MujocoEnv, utils.EzPickle):
+
     """Ant env to either run forwards or backwards"""
     def __init__(self, goal_vel=None):
         self.goal_direction = 0.0
@@ -17,7 +18,8 @@ class AntEnvRandDirec(mujoco_env.MujocoEnv, utils.EzPickle):
             np.clip(self.sim.data.cfrc_ext, -1, 1).flat, 
         ])
 
-    def sample_goals(self, num_goals=1):
+    @staticmethod
+    def sample_goals(num_goals=1):
         return -1 + 2.0*np.random.binomial(num_goals, 0.5) # -1 or 1, with probability 0.5
 
     def reset(self, goal_vel=None):

@@ -42,7 +42,8 @@ def train(env_id, num_timesteps, seed, load_path, render):
         lr=3e-4,
         cliprange=0.2,
         total_timesteps=num_timesteps,
-        load_path=load_path)
+        load_path=load_path, 
+        reset_fn=lambda: AntEnvRandDirec.sample_goals(1))
 
 
 def main():

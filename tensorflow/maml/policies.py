@@ -70,31 +70,31 @@ def ppo_forward(dims, weights, scope, reuse=False):
         neglogp0 = pd.neglogp(a0) # neglogprob of that action (for gradient)
     return a0, vf, neglogp0, pd
 
-def ppo_loss(pd, sample_values, hyperparams):
+def ppo_loss(pd, vf, sample_values, hyperparams):
     """Return op of PPO Clipped Surrogate Objective loss"""
     svs = sample_values
     hps = hyperparams
 
-    adv = svs['returns'] - svs['values']
+    adv = svs['returns'] - svs['oldvpreds']
     adv_mean, adv_var = tf.nn.moments(adv, axes=[1])
     adv = (adv - adv_mean) / (adv_var + 1e-8)
 
-    neglogpac = pd.neglogp(svs['action'])
+    neglogpac = pd.neglogp(svs['actions'])
     entropy = tf.reduce_mean(pd.entropy())
 
     # value prediction
     # do the clipping to prevent too much change/instability in the value function
-    vpredclipped = svs['oldvpred'] + tf.clip_by_value(svs['vpred'] - svs['oldvpred'], - hps['cliprange'], hps['cliprange'])
-    vf_losses1 = tf.square(svs['vpred'] - svs['returns'])
+    vpredclipped = svs['oldvpreds'] + tf.clip_by_value(vf - svs['oldvpreds'], - hps['cliprange'], hps['cliprange'])
+    vf_losses1 = tf.square(vf - svs['returns'])
     vf_losses2 = tf.square(vpredclipped - svs['returns']) 
     vf_loss = .5 * tf.reduce_mean(tf.maximum(vf_losses1, vf_losses2)) # times 0.5 because MSE loss
     # Compute prob ratio between old and new 
-    ratio = tf.exp(svs['oldneglogpac'] - neglogpac)
+    ratio = tf.exp(svs['oldneglogpacs'] - neglogpac)
     pg_losses = -adv * ratio
     pg_losses2 = -adv * tf.clip_by_value(ratio, 1.0 - hps['cliprange'], 1.0 + hps['cliprange'])
     # Clipped Surrogate Objective (max instead of min because values are flipped)
     pg_loss = tf.reduce_mean(tf.maximum(pg_losses, pg_losses2))
-    approxkl = .5 * tf.reduce_mean(tf.square(neglogpac - svs['oldneglogpac']))
+    approxkl = .5 * tf.reduce_mean(tf.square(neglogpac - svs['oldneglogpacs']))
     clipfrac = tf.reduce_mean(tf.to_float(tf.greater(tf.abs(ratio - 1.0), hps['cliprange']))) # diagnostic: fraction of values that were clipped
     # total loss = action loss, entropy bonus, and value loss
     loss = pg_loss - entropy * hps['ent_coef'] + vf_loss * hps['vf_coef']

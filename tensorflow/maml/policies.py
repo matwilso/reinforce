@@ -10,6 +10,7 @@ from baselines.common.input import observation_input
 # meta = outer = slow = the stuff used to optimize the meta loss
 # act  = inner = fast = the stuff used to optimize the inner loss.  these get updated more frequently, because this
 # makes it easier to sample and optimize the full objective 
+
  
 # GRAPH CHUNKS
 # (functions that can be called as part of defining the computational graph)

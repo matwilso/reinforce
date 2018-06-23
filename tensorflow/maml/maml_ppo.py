@@ -17,6 +17,30 @@ from .policies import construct_ppo_weights, ppo_forward, ppo_loss
 
 # TODO: major refactor to make everything simpler. after we get it working
 # TODO: convert the copy trajs and stuff to some class that I can just change the params I need, like scope name and number in batch
+# TODO: maybe use a different X for acting, to make it a little less confusing and maybe avoid bug
+# for the optimizations:
+# TODO: add optimization over noptepochs
+# TODO: seems like I may want to do this in a map_fn like they do in the maml implementation, instead of Dataset
+
+def dicts_to_feed(self, d1, d2):
+    """Assign all values of d1 to the values of d2
+    d1 is Dict[str, tf.placeholder]
+    d2 is Dict[str, np.ndarray]
+
+    return Dict[tf.placeholder, np.ndarray]
+    """"
+    feed_dict = {d1[key]: d2[key] for key in d2}
+    return feed_dict 
+def make_traj_dataset(d):
+    """Dict[str, np.ndarray] --> tf.data.Dataset of: (obs, action, values, returns, oldvpred, oldneglogpac)"""
+    return tf.data.Dataset.from_tensor_slices((d['obs'], d['action'], d['values'], d['returns'], d['oldvpred'], d['oldneglogpac']))
+def constfn(val):
+    def f(_):
+        return val
+    return f
+def safemean(xs):
+    return np.nan if len(xs) == 0 else np.mean(xs)
+
 
 class Model(object):
     """The way this class works is that the __init__ sets up the computational graph and the
@@ -34,41 +58,50 @@ class Model(object):
         self.vf_coef = vf_coef
         self.X, self.processed_x = observation_input(ob_space)
         self.meta_X, self.meta_processed_x = observation_input(ob_space)
-        # TODO: maybe use a different X for acting, to make it a little less confusing and maybe avoid bug
 
-        SHUFFLE_BUFFER_SIZE = nminibatches * nbatch_train
-        META_LR = tf.placeholder(tf.float32, [], 'META_LR')
-        INNER_LR = tf.placeholder(tf.float32, [], 'INNER_LR')
-        CLIPRANGE = tf.placeholder(tf.float32, [], 'CLIPRANGE') # epsilon in the paper
-        self.hyperparams = dict(lr=LR, cliprange=CLIPRANGE, ent_coef=ent_coef, vf_coef=vf_coef)
+        # HYPERPARAMS
+        self.HYPERPARAMS = {}
+        self.HYPERPARAMS['ent_coef'] = ent_coef
+        self.HYPERPARAMS['vf_coef'] = vf_coef
+        # we make these feedable so we can vary them based on the step if we want
+        self.HYPERPARAMS['inner_lr'] = tf.placeholder(tf.float32, [], 'INNER_LR') 
+        self.HYPERPARAMS['meta_lr'] = tf.placeholder(tf.float32, [], 'META_LR')
+        self.HYPERPARAMS['cliprange'] = tf.placeholder(tf.float32, [], 'CLIPRANGE') # epsilon in the PPO paper
 
-        self.A_A = make_pdtype(ac_space).sample_placeholder([None], name='A_A') # placeholder for sampled action
-        self.A_VALUES = tf.placeholder(tf.float32, [None], 'A_VALUES') # Actual values 
-        self.A_R = tf.placeholder(tf.float32, [None], 'A_R') # Actual returns 
-        self.A_OLDVPRED = tf.placeholder(tf.float32, [None], 'A_OLDVPRED') # Old state-value pred
-        self.A_OLDNEGLOGPAC = tf.placeholder(tf.float32, [None], 'A_OLDNEGLOGPAC') # Old policy negative log probability (used for prob ratio calc)
-        A_TRAJ_DATASET = tf.data.Dataset.from_tensor_slices((self.X, self.A_A, self.A_R, self.A_OLDVPRED, self.A_OLDNEGLOGPAC))
-        A_TRAJ_DATASET = A_TRAJ_DATASET.shuffle(SHUFFLE_BUFFER_SIZE, seed=seed)
-        #A_TRAJ_DATASET = A_TRAJ_DATASET.repeat(noptechos) # may add this back later, after testing
-        A_TRAJ_DATASET = A_TRAJ_DATASET.batch(nminibatches) 
-        A_TRAJ_ITERATOR = A_TRAJ_DATASET.make_initializable_iterator()
+        # INNER TRAJECTORY PLACEHOLDERS
+        # TODO: turn this into a function or class to make it easier, so we don't have to repeat this for the meta
+        self.IT_PHS = {}
+        self.IT_PHS['obs'] = self.X
+        self.IT_PHS['action'] = make_pdtype(ac_space).sample_placeholder([None], name='A_A') # placeholder for sampled action
+        self.IT_PHS['values'] = tf.placeholder(tf.float32, [None], 'A_VALUES') # Actual values 
+        self.IT_PHS['returns'] = tf.placeholder(tf.float32, [None], 'A_R') # Actual returns 
+        self.IT_PHS['oldvpred'] = tf.placeholder(tf.float32, [None], 'A_OLDVPRED') # Old state-value pred
+        self.IT_PHS['oldneglogpac'] = tf.placeholder(tf.float32, [None], 'A_OLDNEGLOGPAC') # Old policy negative log probability (used for prob ratio calc)
+        inner_traj_dataset = make_traj_dataset(self.IT_PHS)
+        inner_traj_dataset = inner_traj_dataset.shuffle(shuffle_buffer_size=nminibatches*nbatch_train, seed=seed)
+        #inner_traj_dataset = inner_traj_dataset.repeat(noptechos) # may add this back later, after testing
+        inner_traj_dataset = inner_traj_dataset.batch(nminibatches) 
+        inner_traj_iterator = inner_traj_dataset.make_initializable_iterator()
 
-        self.B_A = make_pdtype(ac_space).sample_placeholder([None], name='B_A') # placeholder for sampled action
-        self.B_VALUES = tf.placeholder(tf.float32, [None], 'B_VALUES') # Actual values 
-        self.B_R = tf.placeholder(tf.float32, [None], 'A_R') # Actual returns 
-        self.B_OLDVPRED = tf.placeholder(tf.float32, [None], 'A_OLDVPRED') # Old state-value pred
-        self.B_OLDNEGLOGPAC = tf.placeholder(tf.float32, [None], 'A_OLDNEGLOGPAC') # Old policy negative log probability (used for prob ratio calc)
-        B_TRAJ_DATSET = tf.data.Dataset.from_tensor_slices((self.X, self.B_A, self.B_R, self.B_OLDVPRED, self.B_OLDNEGLOGPAC))
-        B_TRAJ_DATASET = B_TRAJ_DATASET.shuffle(SHUFFLE_BUFFER_SIZE, seed=seed)
-        #B_TRAJ_DATASET = B_TRAJ_DATASET.repeat(noptechos)
-        B_TRAJ_DATASET = B_TRAJ_DATASET.batch(nminibatches) 
-        B_TRAJ_ITERATOR = B_TRAJ_DATSET.make_initializable_iterator()
+        # META TRAJECTORY PLACEHOLDERS
+        self.MT_PHS = {}
+        self.MT_PHS['obs'] = self.X
+        self.MT_PHS['action'] = make_pdtype(ac_space).sample_placeholder([None], name='B_A') # placeholder for sampled action
+        self.MT_PHS['values'] = tf.placeholder(tf.float32, [None], 'B_VALUES') # Actual values 
+        self.MT_PHS['returns'] = tf.placeholder(tf.float32, [None], 'B_R') # Actual returns 
+        self.MT_PHS['oldvpred'] = tf.placeholder(tf.float32, [None], 'B_OLDVPRED') # Old state-value pred
+        self.MT_PHS['oldneglogpac'] = tf.placeholder(tf.float32, [None], 'B_OLDNEGLOGPAC') # Old policy negative log probability (used for prob ratio calc)
+        meta_traj_dataset = make_traj_dataset(self.MT_PHS)
+        meta_traj_dataset = meta_traj_dataset.shuffle(shuffle_buffer_size=nminibatches*nbatch_train, seed=seed)
+        #meta_traj_dataset = meta_traj_dataset.repeat(noptechos) # may add this back later, after testing
+        meta_traj_dataset = meta_traj_dataset.batch(nminibatches) 
+        meta_traj_iterator = meta_traj_dataset.make_initializable_iterator()
 
         # WEIGHTS
         # slow meta weights that only get updated after a full meta-batch
         self.slow_weights = construct_ppo_weights(ob_space, dim_hidden, ac_space, scope='slow')  # type: Dict[str, tf.Variable]
         self.slow_vars = tf.trainable_variables(scope='slow')
-        # fast weights used to act in the env
+        # fast act weights (these are the only ones used to act in the env. the rest are just for optimization)
         self.act_weights = construct_ppo_weights(ob_space, dim_hidden, ac_space, scope='act')  # type: Dict[str, tf.Variable]
         self.act_vars = tf.trainable_variables(scope='act')
 
@@ -89,22 +122,16 @@ class Model(object):
         # Layout of this section:
         # This is one big line of computation.
 
-        meta_optimizer = tf.train.AdamOptimizer(learning_rate=META_LR, epsilon=1e-5)
-
         # this part is just for setting up the update on the act weights.
         # (may want to do several epoch runs later here, but idk how maml will perform with that)
 
         # INNER LOSS
-        # TODO: add optimization over noptepochs
-        # TODO: seems like I may want to do this in a map_fn like they do in the maml implementation, instead of Dataset
-
         # run multiple iterations over the inner loss, updating the weights in fast weights
         fast_weights = None 
         for _ in range(nminibatches):
             # 1st iter, we run with self.slow_weights, the rest will be using fast_weights
             weights = fast_weights if fast_weights is not None else self.slow_weights
-
-            A_MB_OBS, A_MB_A, A_MB_VALUES, A_MB_R, A_MB_OLDVPRED, A_MB_OLDNEGLOGPAC = A_TRAJ_ITERATOR.get_next()
+            A_MB_OBS, A_MB_A, A_MB_VALUES, A_MB_R, A_MB_OLDVPRED, A_MB_OLDNEGLOGPAC = inner_traj_iterator.get_next()
             inner_train_dims = A_MB_OBS, self.dim_hidden, self.ac_space
             inner_sample_values = dict(obs=A_MB_OBS, action=A_MB_A, values=A_MB_VALUES, returns=A_MB_R, oldvpred=A_MB_OLDVPREd, oldneglogpac=A_MB_OLDNEGLOGPAC)
 
@@ -127,7 +154,7 @@ class Model(object):
         # -------------------------------------------------------------------------
         meta_loss = 0
         for _ in range(nminibatches):
-            B_MB_OBS, B_MB_A, B_MB_VALUES, B_MB_R, B_MB_OLDVPRED, B_MB_OLDNEGLOGPAC = B_TRAJ_ITERATOR.get_next()
+            B_MB_OBS, B_MB_A, B_MB_VALUES, B_MB_R, B_MB_OLDVPRED, B_MB_OLDNEGLOGPAC = meta_traj_iterator.get_next()
             meta_train_dims = B_MB_OBS, self.dim_hidden, self.ac_space
             meta_sample_values = dict(obs=B_MB_OBS, action=B_MB_A, values=B_MB_VALUES, returns=B_MB_R, oldvpred=B_MB_OLDVPRED, oldneglogpac=B_MB_OLDNEGLOGPAC)
 
@@ -143,50 +170,55 @@ class Model(object):
         zero_meta_grad_pile_ops = [tf.assign(self.meta_grad_pile[w], tf.zeros_like(self.meta_grad_pile[w])) for w in self.meta_grad_pile]
 
         # zip up the grads to fit the tf.train.Optimizer API, and then apply them to update the slow weights
+        meta_optimizer = tf.train.AdamOptimizer(learning_rate=META_LR, epsilon=1e-5)
         meta_grads_and_vars = [(self.meta_grad_pile[w], self.slow_weights[w]) for w in self.slow_weights)]
         self.apply_meta_grad_pile = meta_optimizer.apply_gradients(meta_grads_and_vars, name='meta_grad_step')
 
     def act(self, obs):
+        """Feed in single obs to take single action in env. Return action, value, neglogp of action"""
         a, v, neglogp = self.sess.run([self.act_a, self.act_v, self.act_neglogp], {self.X:obs})
         return a, v, neglogp
 
     def value(self, obs):
+        """Feed in single obs, return single value"""
         v = self.sess.run([self.act_v], {self.X:obs})
         return v
 
-    def sync_slow_and_fast(self):
-        sess.run(self.sync_vars_ops)
-
-    def inner_train(self):
+    def inner_train(self, traj_sample, hyperparams):
         """inner train on 1 task in the meta-batch"""
-        # FEED: traja
-        sess.run(self.A_TRAJ_ITERATOR.initializer)
-        self.X, self.A_A, self.A_VALUES, self.A_R, self.A_OLDVPRED, self.A_OLDNEGLOGPAC
-        feed_dict = {}
-        sess.run(self.inner_train_op)
+        # reset so sampling is deterministic between inner and meta
+        # (important and required for meta gradient calculation to be correct)
+        sess.run(self.inner_traj_iterator.initializer) 
 
-    def meta_train(self):
+        # Construct the feed dict from the traj sample and the hyperparams
+        inner_dict = dicts_to_feed(self.IT_PHS, inner_traj_sample)
+        hype_dict = dicts_to_feed(self.HYPERPARAMS, hyperparams)
+        feed_dict = {**inner_dict, **hype_dict}
+        # run this shit
+        sess.run(self.inner_train_op, feed_dict)
+
+    def meta_train(self, inner_traj_sample, meta_traj_sample, hyperparams):
         """meta train on 1 task in the meta-batch"""
-        # these are required to reset the tf.data.Dataset object, 
-        # but also resetting the A_TRAJ_ITERATOR here makes sure that you will draw the sample samples from your trajectory
-        # and so the gradients will be the same and so your meta gradient will be computing the right thing
-        # (i.e. this is very important)
-        sess.run(self.A_TRAJ_ITERATOR.initializer) 
-        sess.run(self.B_TRAJ_ITERATOR.initializer)
+        # important to reset these. see inner_train 
+        sess.run(self.inner_traj_iterator.initializer) 
+        sess.run(self.meta_traj_iterator.initializer)
 
         # sync the fast and slow weights together because we are going to run through all the optimization again
         sess.run(self.sync_vars_ops)
 
-        # list of stuff we need:
-        # obs_a, action_a, returns_a, oldvpreds_a, oldneglogpac_a
-        # obs_b, action_b, returns_b, oldvpreds_b, oldneglogpac_b
-        # lr, cliprange
+        # Construct the feed dict...
+        inner_dict = dicts_to_feed(self.IT_PHS, inner_traj_sample)
+        meta_dict = dicts_to_feed(self.MT_PHS, meta_traj_sample)
+        hype_dict = dicts_to_feed(self.HYPERPARAMS, hyperparams)
+        feed_dict = {**inner_dict, **meta_dict, **hype_dict}
+        # ...and run this shit
         sess.run(self.meta_train_op, feed_dict=feed_dict)
 
     def apply_meta_grad(self):
         """apply the gradient update for the whole meta-batch""""
-        sess.run(self.apply_meta_grad_pile)
-        sess.run(self.sync_vars_ops) 
+        sess.run(self.apply_meta_grad_pile) # take a step with the meta optimizer 
+        sess.run(self.sync_vars_ops)  # sync the act_weights so they match the new updated slow_weights
+        sess.run(self.zero_meta_grad_ops) # zero out the meta gradient for next batch
 
 class Runner(object):
     """Object to hold RL discounting/trace params and to run a rollout of the policy"""
@@ -211,7 +243,6 @@ class Runner(object):
 
         Returns: obs, returns, masks, actions, values, neglogpacs, states, epinfos
         """
-
         # TODO: probably need to randomly draw from the task distrib
 
         # mb = mini-batch
@@ -264,10 +295,6 @@ class Runner(object):
         return (*map(sf01, (mb_obs, mb_returns, mb_dones, mb_actions, mb_values, mb_neglogpacs)), 
             mb_states, epinfos)
 
-def constfn(val):
-    def f(_):
-        return val
-    return f
 
 def meta_learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr, 
             vf_coef=0.5,  max_grad_norm=0.5, gamma=0.99, lam=0.95, 
@@ -362,5 +389,3 @@ def meta_learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
             model.save(savepath)
     env.close()
 
-def safemean(xs):
-    return np.nan if len(xs) == 0 else np.mean(xs)

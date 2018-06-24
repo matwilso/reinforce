@@ -9,6 +9,7 @@ def train(env_id, num_meta_iterations, seed, load_path, render):
     from baselines.common.vec_env.vec_normalize import VecNormalize
     import maml_ppo
     import gym
+    gym.logger.set_level(40)
     import tensorflow as tf
     from envs.reset_vec_env import ResetValDummyVecEnv, ResetValVecNormalize
     ncpu = 1
@@ -21,19 +22,19 @@ def train(env_id, num_meta_iterations, seed, load_path, render):
         env = bench.Monitor(env, logger.get_dir())
         return env
 
-    def custom_env():
-        env = AntEnvRandDirec(goal_vel=1.0)
+    def custom_env(goal_vel=None):
+        env = AntEnvRandDirec(goal_vel=goal_vel)
         env = TimeLimit(env, max_episode_steps=1000)
-        env = bench.Monitor(env, logger.get_dir())
+        env = bench.Monitor(env, logger.get_dir(), allow_early_resets=True)
         return env
 
-    env = ResetValDummyVecEnv([custom_env]*5)
-    env = ResetValVecNormalize(env)
+    #env = ResetValDummyVecEnv([custom_env]*5)
+    #env = ResetValVecNormalize(env)
 
     set_global_seeds(seed)
 
     # in MAML paper, it looks like they are using nenvs = 40, nsteps = 200
-    maml_ppo.meta_learn(env=env, nsteps=512, nminibatches=32, nbatch_meta=20,
+    maml_ppo.meta_learn(env_fn=custom_env, nenvs=1, nsteps=512, nminibatches=32, nbatch_meta=20,
         lam=0.95, gamma=0.99, noptepochs=10, log_interval=1, 
         render=render,
         save_interval=10,

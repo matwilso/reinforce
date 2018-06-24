@@ -13,6 +13,11 @@ from baselines.common.distributions import make_pdtype
 from baselines.common.runners import AbstractEnvRunner
 from policies import construct_ppo_weights, ppo_forward, ppo_loss
 
+from baselines.common.vec_env.vec_normalize import VecNormalize
+from baselines.common.vec_env.dummy_vec_env import DummyVecEnv
+from envs.reset_vec_env import ResetValDummyVecEnv, ResetValVecNormalize
+
+
 # seed for this code: https://github.com/openai/baselines/tree/master/baselines/ppo2
 # paper: https://arxiv.org/abs/1707.06347 
 
@@ -32,7 +37,7 @@ def dicts_to_feed(d1, d2):
 
     return Dict[tf.placeholder, np.ndarray]
     """
-    feed_dict = {d1[key]: d2[key] for key in d2}
+    feed_dict = {d1[key]: d2[key] for key in d1}
     return feed_dict 
 def make_traj_dataset(d):
     """Dict[str, np.ndarray] --> tf.data.Dataset of: (obs, actions, returns, oldvpreds, oldneglogpacs)"""
@@ -196,57 +201,54 @@ class Model(object):
     def inner_train(self, traj_sample, hyperparams):
         """inner train on 1 task in the meta-batch"""
         # reset so sampling is the same between inner and meta (important and required for meta gradient calculation to be correct)
-        self.sess.run(self.inner_traj_iterator.initializer) 
 
         # Construct the feed dict from the traj sample and the hyperparams
         inner_dict = dicts_to_feed(self.IT_PHS, traj_sample)
+        self.sess.run(self.inner_traj_iterator.initializer, inner_dict) 
+
         hype_dict = dicts_to_feed(self.DYNAMIC_HYPERPARAMS, hyperparams)
-        feed_dict = {**inner_dict, **hype_dict, **self.CONST_HYPERPARAMS}
-        # run this shit
-        return self.sess.run([self.inner_train_op, self.last_inner_loss], feed_dict)[1]
+        return self.sess.run([self.inner_train_op, self.last_inner_loss], hype_dict)[1]
 
     def meta_train(self, inner_traj_sample, meta_traj_sample, hyperparams):
         """meta train on 1 task in the meta-batch"""
-        # important to reset these. see inner_train 
-        self.sess.run(self.inner_traj_iterator.initializer) # reset so it is same as inner train
-        self.sess.run(self.meta_traj_iterator.initializer)
 
         # sync the fast and slow weights together because we are going to run through all the optimization again
         self.sess.run(self.sync_vars_ops)
 
-        # Construct the feed dict...
+        # Construct the feed dict
         inner_dict = dicts_to_feed(self.IT_PHS, inner_traj_sample)
         meta_dict = dicts_to_feed(self.MT_PHS, meta_traj_sample)
-        hype_dict = dicts_to_feed(self.DYNAMIC_HYPERPARAMS, hyperparams)
-        feed_dict = {**inner_dict, **meta_dict, **hype_dict, **self.CONST_HYPERPARAMS}
-        # ...and run this shit
-        return self.sess.run([self.meta_train_op, self.total_meta_loss], feed_dict=feed_dict)[1]
+        # important to reset these. see inner_train 
+        self.sess.run(self.inner_traj_iterator.initializer, inner_dict) # reset so it is same as inner train
+        self.sess.run(self.meta_traj_iterator.initializer, meta_dict)
 
-    def apply_meta_grad(self):
+        hype_dict = dicts_to_feed(self.DYNAMIC_HYPERPARAMS, hyperparams)
+        return self.sess.run([self.meta_train_op, self.total_meta_loss], feed_dict=hype_dict)[1]
+
+    def apply_meta_grad(self, meta_lr):
         """apply the gradient update for the whole meta-batch"""
-        self.sess.run(self.apply_meta_grad_ops) # take a step with the meta optimizer 
+        feed_dict = {self.DYNAMIC_HYPERPARAMS['meta_lr'] : meta_lr}
+        self.sess.run(self.apply_meta_grad_ops, feed_dict=feed_dict) # take a step with the meta optimizer 
         self.sess.run(self.sync_vars_ops)  # sync the act_weights so they match the new updated slow_weights
         self.sess.run(self.zero_meta_grad_ops) # zero out the meta gradient for next batch
 
 class Runner(object):
     """Object to hold RL discounting/trace params and to run a rollout of the policy"""
-    def __init__(self, *, env, model, nsteps, gamma, lam, render=False):
-        self.env = env
+    def __init__(self, *, model, nsteps, gamma, lam, render=False):
         self.model = model
         self.nsteps = nsteps
         self.gamma = gamma # discount factor
         self.lam = lam # GAE parameter used for exponential weighting of combination of n-step returns
         self.render = render
-        self.nenv = env.num_envs
-        self.obs = np.zeros((self.nenv,) + env.observation_space.shape, dtype=model.X.dtype.name)
 
-    def run(self, reset_val=None):
+    def run(self, env):
         """Run the policy in env for the set number of steps to collect a trajectory
 
         Returns: Trajectory, epinfos
         """
-        import ipdb; ipdb.set_trace()
-        self.obs[:] = self.env.reset(reset_val)
+        self.nenv = env.num_envs
+        self.obs = np.zeros((self.nenv,) + env.observation_space.shape, dtype=self.model.X.dtype.name)
+        self.obs[:] = env.reset()
         self.dones = [False for _ in range(self.nenv)]
 
         # mb = mini-batch
@@ -255,18 +257,18 @@ class Runner(object):
         # Do a rollout of one horizon (not necessarily one ep)
         for _ in range(self.nsteps):
             actions, values, neglogpacs = self.model.act(self.obs)
-            mb_obs.append(self.obs.copy())
-            mb_actions.append(actions)
-            mb_values.append(values)
-            mb_neglogpacs.append(neglogpacs)
+            mb_obs.append(self.obs.copy().squeeze())
+            mb_actions.append(actions.squeeze())
+            mb_values.append(values.squeeze())
+            mb_neglogpacs.append(neglogpacs.squeeze())
             mb_dones.append(self.dones)            
-            self.obs[:], rewards, self.dones, infos = self.env.step(actions)
+            self.obs[:], rewards, self.dones, infos = env.step(actions)
             if self.render: 
-                self.env.venv.envs[0].render()
+                env.venv.envs[0].render()
             for info in infos:
                 maybeepinfo = info.get('episode')
                 if maybeepinfo: epinfos.append(maybeepinfo)
-            mb_rewards.append(rewards)
+            mb_rewards.append(rewards.squeeze())
         # batch of steps to batch of rollouts
         mb_obs = np.asarray(mb_obs, dtype=self.obs.dtype)
         mb_rewards = np.asarray(mb_rewards, dtype=np.float32)
@@ -274,7 +276,7 @@ class Runner(object):
         mb_values = np.asarray(mb_values, dtype=np.float32)
         mb_neglogpacs = np.asarray(mb_neglogpacs, dtype=np.float32)
         mb_dones = np.asarray(mb_dones, dtype=np.bool)
-        last_values = self.model.value(self.obs)
+        last_values = self.model.value(self.obs)[0]
         # discount/bootstrap off value fn (compute advantage)
         mb_returns = np.zeros_like(mb_rewards)
         mb_advs = np.zeros_like(mb_rewards)
@@ -296,7 +298,7 @@ class Runner(object):
             return arr.swapaxes(0, 1).reshape(s[0] * s[1], *s[2:])
 
         # obs, actions, returns, oldvpreds, neglogpacs
-        trajectory = dict(obs=sf01(mb_obs), actions=sf01(mb_actions), returns=sf01(mb_returns), oldvpreds=sf01(mb_values), oldneglogpacs=sf01(mb_neglogpacs))
+        trajectory = dict(obs=mb_obs, actions=mb_actions, returns=mb_returns, oldvpreds=mb_values, oldneglogpacs=mb_neglogpacs)
         return trajectory, epinfos
 
     # nmetaiterations = 500
@@ -306,7 +308,7 @@ class Runner(object):
 
 
 
-def meta_learn(*, env, nsteps, num_meta_iterations, nbatch_meta, ent_coef, meta_lr, inner_lr,
+def meta_learn(*, env_fn, nenvs, nsteps, num_meta_iterations, nbatch_meta, ent_coef, meta_lr, inner_lr,
             vf_coef=0.5,  max_grad_norm=0.5, gamma=0.99, lam=0.95, 
             log_interval=10, render=False, nminibatches=4, noptepochs=4, cliprange=0.2,
             save_interval=0, load_path=None, reset_fn):
@@ -338,10 +340,9 @@ def meta_learn(*, env, nsteps, num_meta_iterations, nbatch_meta, ent_coef, meta_
     else: assert callable(cliprange)
     num_meta_iterations = int(num_meta_iterations)
 
-
-    nenvs = env.num_envs
-    ob_space = env.observation_space
-    ac_space = env.action_space
+    one_env = env_fn()
+    ob_space = one_env.observation_space
+    ac_space = one_env.action_space
     nbatch = nenvs * nsteps # number in the batch
     nbatch_train = nbatch // nminibatches # number in the minibatch for training
     nupdates = num_meta_iterations
@@ -356,7 +357,7 @@ def meta_learn(*, env, nsteps, num_meta_iterations, nbatch_meta, ent_coef, meta_
     model = make_model()
     #if load_path is not None:
     #    model.load(load_path)
-    runner = Runner(env=env, model=model, nsteps=nsteps, gamma=gamma, lam=lam, render=render)
+    runner = Runner(model=model, nsteps=nsteps, gamma=gamma, lam=lam, render=render)
 
     epinfobuf = deque(maxlen=100)
     tfirststart = time.time()
@@ -373,18 +374,21 @@ def meta_learn(*, env, nsteps, num_meta_iterations, nbatch_meta, ent_coef, meta_
 
         for i in range(nbatch_meta):
             task_reset_val = reset_fn()  # TODO: test that this returns different vals
+            envs = [env_fn(task_reset_val) for _ in range(nenvs)]
+            env = ResetValDummyVecEnv(envs)
+            env = VecNormalize(env)
 
             # inner sample, and train (fast step on act weights so we can take new sample)
-            inner_traj_sample, meta_epinfos = runner.run(task_reset_val)  # collect a trajectory of length nsteps
+            inner_traj_sample, meta_epinfos = runner.run(env)  # collect a trajectory of length nsteps
             inner_loss = model.inner_train(inner_traj_sample, hypenow)
             # meta sample and train (ppo loss on trajectory from fast weights w.r.t the slow weights)
-            meta_traj_sample, meta_epinfos = runner.run(None)   
+            meta_traj_sample, meta_epinfos = runner.run(env)   
             meta_loss = model.meta_train(inner_traj_sample, meta_traj_sample, hypenow)
 
             epinfobuf.extend(meta_epinfos)
             mblossvals.append(meta_loss)
         # apply piled up gradients from meta batch
-        model.apply_meta_grad()
+        model.apply_meta_grad(meta_lrnow)
 
         lossvals = np.mean(mblossvals, axis=0)
         tnow = time.time()

@@ -12,10 +12,10 @@ Copied from baselines.common.vec_env.DummyVecEnv and altered the reset function
 
 class ResetValDummyVecEnv(VecEnv):
     """DummyVecEnv that allows you to reset the envs with given val"""
-    def __init__(self, env_fns):
-        self.envs = [fn() for fn in env_fns]
+    def __init__(self, envs):
+        self.envs = envs
         env = self.envs[0]
-        VecEnv.__init__(self, len(env_fns), env.observation_space, env.action_space)
+        VecEnv.__init__(self, len(envs), env.observation_space, env.action_space)
         shapes, dtypes = {}, {}
         self.keys = []
         obs_space = env.observation_space
@@ -49,9 +49,9 @@ class ResetValDummyVecEnv(VecEnv):
         return (self._obs_from_buf(), np.copy(self.buf_rews), np.copy(self.buf_dones),
                 self.buf_infos.copy())
 
-    def reset(self, reset_val=None):
+    def reset(self):
         for e in range(self.num_envs):
-            obs = self.envs[e].reset(reset_val)
+            obs = self.envs[e].reset()
             self._save_obs(e, obs)
         return self._obs_from_buf()
 
@@ -112,11 +112,10 @@ class ResetValVecNormalize(VecEnvWrapper):
         else:
             return obs
 
-    def reset(self, reset_val=None):
+    def reset(self):
         """
         Reset all environments
         """
-        import ipdb; ipdb.set_trace()
-        obs = self.venv.reset(reset_val)
+        obs = self.venv.reset()
         return self._obfilt(obs)
 

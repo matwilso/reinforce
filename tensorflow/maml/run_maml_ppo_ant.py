@@ -34,7 +34,7 @@ def train(env_id, num_meta_iterations, seed, load_path, render):
     set_global_seeds(seed)
 
     # in MAML paper, it looks like they are using nenvs = 40, nsteps = 200
-    maml_ppo.meta_learn(env_fn=custom_env, nenvs=1, nsteps=512, nminibatches=32, nbatch_meta=20,
+    maml_ppo.meta_learn(env_fn=custom_env, nenvs=1, nsteps=2048, nminibatches=32, nbatch_meta=20,
         lam=0.95, gamma=0.99, noptepochs=10, log_interval=1, 
         render=render,
         save_interval=10,

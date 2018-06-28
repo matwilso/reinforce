@@ -373,7 +373,8 @@ def meta_learn(*, env_fn, nenvs, nsteps, num_meta_iterations, nbatch_meta, ent_c
         mblossvals = []
 
         for i in range(nbatch_meta):
-            task_reset_val = reset_fn()  # TODO: test that this returns different vals
+            task_reset_val = reset_fn() 
+            print(task_reset_val)
             envs = [env_fn(task_reset_val) for _ in range(nenvs)]
             env = ResetValDummyVecEnv(envs)
             env = VecNormalize(env)

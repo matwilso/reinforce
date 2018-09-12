@@ -32,7 +32,7 @@ known as Monte Carlo Policy Gradient.
 
 The main neural network logic is contained in the PolicyNetwork class,
 with more algorithm specific code, including action taking and loss
-computing contained in the REINFORCE class.
+computing contained in the REINFORCE class.  (NOTE: this only supports discrete actions)
 
 
     Resources:
@@ -181,7 +181,7 @@ class PolicyNetwork(object):
         db2 = np.sum(dout, axis=0)
 
         # gradient of relu (non-negative for values that were above 0 in forward)
-        daffine1 = np.where(fwd_affine1 > 0, daffine1, 0)
+        daffine1 = np.where(fwd_affine1 > 0, drelu1, 0)
 
         # affine1 = W1*x + b1
         # dx

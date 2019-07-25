@@ -21,6 +21,9 @@ parser.add_argument('--render_interval', type=int, default=-1, metavar='N',
                     help='interval between rendering (default: -1)')
 parser.add_argument('--env_id', type=str, default='LunarLander-v2',
                     help='gym environment to load')
+parser.add_argument('--lr', type=float, default=1e-3, 
+                    help='learning rate')
+
 args = parser.parse_args()
 
 # TODO: add weight saving and loading?
@@ -54,7 +57,7 @@ class PolicyNetwork(object):
     {affine - relu } x (L - 1) - affine - softmax  
 
     """
-    def __init__(self, ob_n, ac_n, hidden_dim=500, dtype=np.float32):
+    def __init__(self, ob_n, ac_n, hidden_dim=200, dtype=np.float32):
         """
         Initialize a neural network to choose actions
 
@@ -88,7 +91,7 @@ class PolicyNetwork(object):
         self.cache = {}
         self.grads = {}
         # Configuration for Adam optimization
-        self.optimization_config = {'learning_rate': 1e-3}
+        self.optimization_config = {'learning_rate': args.lr}
         self.adam_configs = {}
         for p in self.params:
             d = {k: v for k, v in self.optimization_config.items()}

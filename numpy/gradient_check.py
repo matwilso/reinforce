@@ -1,7 +1,3 @@
-from __future__ import print_function
-from builtins import range
-from past.builtins import xrange
-
 import numpy as np
 from random import randrange
 
@@ -11,6 +7,7 @@ THIS IS FROM TAKEN FROM STANFORD'S CS231N COURSE, WHICH I HIGHLY RECOMMEND
 http://cs231n.github.io/
 
 It does numerical gradient checking
+I do not currently use it here.
 """
 
 def eval_numerical_gradient(f, x, verbose=True, h=0.00001):

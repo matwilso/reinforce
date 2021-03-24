@@ -4,11 +4,7 @@ import gym
 import numpy as np
 import scipy.stats
 from itertools import count
-
-# make it possible to import from ../../utils/
-import os.path, sys
-sys.path.append(os.path.join(os.path.dirname(os.path.realpath(__file__)), '..'))
-from utils.optim import adam
+from optim import adam
 
 parser = argparse.ArgumentParser(description='Numpy REINFORCE')
 parser.add_argument('--gamma', type=float, default=0.99, metavar='G',
@@ -311,6 +307,4 @@ if __name__ == '__main__':
     np.random.seed(args.seed)
     reinforce = REINFORCE(env)
     main()
-
-
 
